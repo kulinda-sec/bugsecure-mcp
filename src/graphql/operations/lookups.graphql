@@ -1,0 +1,84 @@
+# Small read-only lookups shared by the write tools: safety checks before a
+# write (who the caller is, whose report it is) and the names shown next to
+# ids in approval prompts. Each tool lists the scopes they need in
+# `optionalScopes` (or `requiredScopes` when the check is mandatory).
+
+# The caller's roles (profile:read): platform staff are refused organisation-side writes.
+query GetViewerRoles {
+  me {
+    id
+    roles
+  }
+}
+
+# A report's title, status, programme and reporter (reports:read or triage:read).
+query GetReportRef($id: ID!) {
+  report(id: $id) {
+    id
+    title
+    status
+    program {
+      id
+      title
+    }
+    reporter {
+      id
+      username
+    }
+    assignedTriage {
+      id
+      username
+    }
+  }
+}
+
+# A programme's title and organisation (programs:read).
+query GetProgramRef($id: ID!) {
+  program(id: $id) {
+    id
+    title
+    organization {
+      name
+    }
+  }
+}
+
+# The report and the grade in force an appeal would contest (reports:read).
+query GetAppealTarget($reportId: ID!) {
+  report(id: $reportId) {
+    id
+    title
+    reporter {
+      id
+    }
+  }
+  reportAdjudication(reportId: $reportId) {
+    id
+    severity
+    amount
+    currency
+    side
+  }
+}
+
+# The caller's unread notifications, to name those a write would mark read (profile:read).
+query GetUnreadNotifications {
+  notifications(skip: 0, take: 50, unreadOnly: true) {
+    id
+    title
+  }
+  unreadNotificationCount
+}
+
+# The caller's roles and current public profile, shown before an edit (profile:read).
+query GetMyProfileRef {
+  me {
+    id
+    roles
+  }
+  myProfile {
+    bio
+    website
+    country
+  }
+}

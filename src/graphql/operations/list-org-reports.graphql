@@ -1,0 +1,10 @@
+# Tool: list_org_reports (triage:read)
+query ListOrgReports($filters: ReportFilterInput, $skip: Int!, $take: Int!) {
+  reports(filters: $filters, skip: $skip, take: $take) {
+    ...ReportSummary
+    assignedTriage {
+      id
+      username
+    }
+  }
+}

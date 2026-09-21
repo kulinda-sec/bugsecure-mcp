@@ -1,0 +1,9 @@
+# Tool: add_report_comment (reports:write)
+mutation AddReportComment($input: AddCommentInput!) {
+  addReportComment(input: $input) {
+    id
+    reportId
+    isInternal
+    createdAt
+  }
+}

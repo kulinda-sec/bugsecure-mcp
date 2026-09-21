@@ -1,0 +1,16 @@
+# Tool: submit_report (reports:write)
+mutation SubmitReport($input: SubmitReportInput!) {
+  submitReport(input: $input) {
+    id
+    title
+    status
+    claimedSeverity
+    claimedCvssScore
+    createdAt
+    program {
+      id
+      title
+      slug
+    }
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "name": "@kulinda-sec/bugsecure-mcp",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server for the BugSecure bug bounty platform: browse programmes, work on your reports and triage — with OAuth 2.1, least-privilege scopes and prompt-injection-aware output.",
+  "license": "Apache-2.0",
+  "author": "KLDS",
+  "homepage": "https://github.com/kulinda-sec/bugsecure-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kulinda-sec/bugsecure-mcp.git"
+  },
+  "bugs": "https://github.com/kulinda-sec/bugsecure-mcp/issues",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "bug-bounty",
+    "security",
+    "oauth",
+    "bugsecure"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "bugsecure-mcp": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "CHANGELOG.md",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "packageManager": "pnpm@12.5.1+sha512.e3f305bc784a2bc89f5ad3b6138889470fae8d2af5f36b61216ec91c2c3d64089775f9de38aac331044ea40f245cb0d5666392dfdf65824e1907ef6a2c62de5f",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prebuild": "pnpm run clean",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint --max-warnings=0 .",
+    "lint:fix": "eslint --fix .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "codegen": "node scripts/codegen.ts",
+    "codegen:check": "node scripts/codegen.ts --check",
+    "prune-schema": "node scripts/prune-schema.ts",
+    "schema:check": "node scripts/prune-schema.ts --check",
+    "check": "pnpm run format:check && pnpm run hygiene && pnpm run codegen:check && pnpm run lint && pnpm run typecheck && pnpm run build && pnpm run test:coverage",
+    "prepack": "pnpm run build",
+    "hygiene": "node scripts/check-hygiene.ts",
+    "hygiene:release": "node scripts/check-hygiene.ts --release",
+    "prepublishOnly": "pnpm run hygiene:release",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "@napi-rs/keyring": "2.1.0",
+    "jose": "6.2.12",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@graphql-codegen/core": "^6.2.0",
+    "@graphql-codegen/typed-document-node": "^7.1.0",
+    "@graphql-codegen/typescript-operations": "^6.1.7",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/node": "^24.13.6",
+    "@vitest/coverage-v8": "^5.0.1",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
+    "graphql": "^17.0.2",
+    "husky": "^9.1.7",
+    "prettier": "^3.9.8",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.1"
+  }
+}

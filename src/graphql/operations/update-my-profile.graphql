@@ -1,0 +1,8 @@
+# Tool: update_my_profile (profile:write) — bio, website and country only; never the avatar.
+mutation UpdateMyProfile($input: UpdateResearcherProfileInput!) {
+  updateResearcherProfile(input: $input) {
+    bio
+    website
+    country
+  }
+}

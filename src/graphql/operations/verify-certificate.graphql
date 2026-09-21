@@ -1,0 +1,15 @@
+# Tool: verify_certificate (programs:read)
+query VerifyCertificate($publicToken: String!) {
+  verifyCertificate(publicToken: $publicToken) {
+    reference
+    status
+    isSigned
+    keyId
+    signedAt
+    signature
+    document
+  }
+  certificateSigningKeys {
+    keys
+  }
+}

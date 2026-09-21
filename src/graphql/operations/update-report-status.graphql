@@ -1,0 +1,9 @@
+# Tool: update_report_status (triage:write)
+mutation UpdateReportStatus($input: UpdateReportStatusInput!) {
+  updateReportStatus(input: $input) {
+    id
+    status
+    duplicateOfId
+    updatedAt
+  }
+}

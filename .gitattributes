@@ -1,0 +1,10 @@
+# Normalise line endings: LF in the repository and in every checkout, so
+# Windows contributors don't produce CRLF diffs and the shell hooks in .husky/
+# keep running.
+* text=auto eol=lf
+
+# Generated (never hand-edited): collapsed in pull request diffs and left out
+# of GitHub's language statistics.
+src/graphql/generated.ts  linguist-generated
+schema/bugsecure.graphql  linguist-generated
+pnpm-lock.yaml            linguist-generated

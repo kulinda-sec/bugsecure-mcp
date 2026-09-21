@@ -1,0 +1,19 @@
+# Tool: get_program_terms (programs:read) — published terms: the platform's, or a programme's.
+query ListTermsVersions($kind: TermsKind!, $programId: ID) {
+  termsVersions(kind: $kind, programId: $programId) {
+    id
+    version
+    publishedAt
+  }
+}
+
+query GetTermsDocument($termsVersionId: ID!) {
+  termsDocument(termsVersionId: $termsVersionId) {
+    id
+    kind
+    programId
+    version
+    publishedAt
+    body
+  }
+}

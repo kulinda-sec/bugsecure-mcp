@@ -1,0 +1,40 @@
+# Tool: get_my_profile (profile:read). Never select `email` or linked identities.
+query GetMyProfile {
+  me {
+    id
+    username
+    roles
+    status
+    kycStatus
+    isAmbassador
+    approvedAt
+    createdAt
+  }
+  myProfile {
+    bio
+    country
+    website
+    level
+    xp
+    reputation
+    streak
+    longestStreak
+  }
+  unreadNotificationCount
+}
+
+# The researcher's own stats and monthly activity (profile:read; own user id only).
+query GetMyStats($userId: ID!, $months: Int!) {
+  researcherStats(userId: $userId) {
+    totalReports
+    validatedReports
+    validationRate
+    totalEarned
+    reportsBySeverity
+  }
+  researcherActivity(userId: $userId, months: $months) {
+    date
+    submissions
+    validated
+  }
+}

@@ -1,0 +1,10 @@
+# Tool: raise_appeal (reports:write)
+mutation RaiseAppeal($input: RaiseAppealInput!) {
+  raiseAppeal(input: $input) {
+    id
+    reportId
+    adjudicationId
+    status
+    createdAt
+  }
+}

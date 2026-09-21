@@ -1,0 +1,41 @@
+# Tool: get_program (programs:read)
+query GetProgram($id: ID!) {
+  program(id: $id) {
+    ...ProgramDetail
+  }
+}
+
+query GetProgramBySlug($slug: String!) {
+  programBySlug(slug: $slug) {
+    ...ProgramDetail
+  }
+}
+
+# Published disclosures, hall of fame and reward statistics of a public programme (programs:read).
+query GetProgramActivity($slug: String!) {
+  publicProgramActivity(slug: $slug) {
+    overview {
+      total
+      lastWeek
+      averageCertifiedReward
+      rewardSampleSize
+      confirmedSettlements
+      hallOfFame {
+        username
+        isAmbassador
+        contributions
+      }
+    }
+    disclosures {
+      id
+      title
+      summary
+      severity
+      certifiedReward
+      settlement
+      username
+      publishedAt
+    }
+    nextCursor
+  }
+}

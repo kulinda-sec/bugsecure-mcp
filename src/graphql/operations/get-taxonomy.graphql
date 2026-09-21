@@ -1,0 +1,14 @@
+# Tool: get_taxonomy (programs:read) — the published vulnerability taxonomy graders pick from.
+query GetTaxonomy {
+  taxonomyProfile {
+    taxonomyId
+    taxonomyVersion
+    nodes {
+      id
+      name
+      priority
+      cvssVector
+      cweId
+    }
+  }
+}

@@ -1,0 +1,26 @@
+# Tool: get_org_report_stats (triage:read)
+query GetOrgReportStats($orgId: ID!, $months: Int!) {
+  reportTrends(orgId: $orgId, months: $months) {
+    date
+    status
+    count
+  }
+  severityDistribution(orgId: $orgId) {
+    severity
+    count
+  }
+  organizationStanding(orgId: $orgId) {
+    totalIssued
+    totalSettled
+    currentlyOverdue
+    longestOverdueDays
+    oldestOverdueSince
+    submissionsSuspended
+  }
+  payoutSummary(orgId: $orgId, months: $months) {
+    month
+    count
+    totalPaid
+    avgBounty
+  }
+}

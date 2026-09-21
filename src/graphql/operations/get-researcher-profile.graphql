@@ -1,0 +1,24 @@
+# Tool: get_researcher_profile (programs:read)
+query GetResearcherProfile($username: String!) {
+  researcherPublicProfile(username: $username) {
+    userId
+    username
+    memberSince
+    isAmbassador
+    bio
+    country
+    website
+    level
+    xp
+    reputation
+    streak
+    longestStreak
+    reportsSubmitted
+    reportsAccepted
+    badges {
+      id
+      name
+      awardedAt
+    }
+  }
+}

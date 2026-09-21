@@ -1,0 +1,8 @@
+*                    @baakeydow
+
+# Security-sensitive paths: changes need a maintainer review.
+/src/auth/           @baakeydow
+/src/transports/     @baakeydow
+/src/untrusted.ts    @baakeydow
+/.github/            @baakeydow
+/Dockerfile          @baakeydow

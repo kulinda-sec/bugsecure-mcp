@@ -1,0 +1,6 @@
+# Tool: save_disclosure_draft (disclosures:write) — saves a draft; never approves or publishes.
+mutation SaveDisclosureDraft($input: SaveDisclosureInput!) {
+  saveReportDisclosure(input: $input) {
+    ...DisclosureDraftFields
+  }
+}

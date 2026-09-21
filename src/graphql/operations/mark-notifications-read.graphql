@@ -1,0 +1,8 @@
+# Tool: mark_notifications_read (notifications:write) — only notifications the token can read.
+mutation MarkNotificationRead($id: ID!) {
+  markNotificationAsRead(id: $id)
+}
+
+mutation MarkAllNotificationsRead {
+  markAllNotificationsAsRead
+}

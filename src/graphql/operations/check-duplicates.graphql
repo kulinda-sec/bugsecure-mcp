@@ -1,0 +1,6 @@
+# Tool: check_duplicates (triage:read — organization-side data, see README)
+query CheckDuplicates($programId: ID!, $title: String!, $description: String!) {
+  checkDuplicates(programId: $programId, title: $title, description: $description) {
+    ...ReportSummary
+  }
+}

@@ -1,0 +1,13 @@
+# Tool: search_programs (programs:read)
+query SearchPrograms($filters: ProgramFilterInput, $skip: Int!, $take: Int!) {
+  programs(filters: $filters, skip: $skip, take: $take) {
+    ...ProgramSummary
+  }
+}
+
+# Private programmes the caller was invited to (programs:read).
+query ListInvitedPrograms($skip: Int!, $take: Int!) {
+  myInvitedPrograms(skip: $skip, take: $take) {
+    ...ProgramSummary
+  }
+}

@@ -1,0 +1,9 @@
+# Tool: get_program_stats (triage:read)
+query GetProgramStats($programId: ID!) {
+  programStats(programId: $programId) {
+    totalReports
+    reportsByStatus
+    reportsBySeverity
+    averageResolutionTime
+  }
+}

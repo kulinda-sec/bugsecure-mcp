@@ -1,0 +1,9 @@
+# Tool: list_org_programs (triage:read) — every programme of the caller's opted-in organisations,
+# drafts and archived ones included. Only the fields below.
+query ListOrgPrograms($skip: Int!, $take: Int!) {
+  myPrograms(skip: $skip, take: $take) {
+    ...ProgramSummary
+    currency
+    triageDeadlineBusinessDays
+  }
+}
