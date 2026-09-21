@@ -1,0 +1,15 @@
+# A hook launched from a GUI client or any non-interactive shell inherits a bare
+# PATH with no nvm, so `pnpm` is not found and the push dies before a single
+# check has run. Fall back to the newest nvm-installed Node that carries pnpm.
+if ! command -v pnpm >/dev/null 2>&1; then
+  for bin in $(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V -r); do
+    if [ -x "$bin/pnpm" ]; then
+      PATH="$bin:$PATH"
+      export PATH
+      break
+    fi
+  done
+fi
+
+# The same gate CI runs.
+pnpm run check

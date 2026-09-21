@@ -1,0 +1,7 @@
+dist/
+coverage/
+pnpm-lock.yaml
+schema/bugsecure.graphql
+src/graphql/generated.ts
+CODE_OF_CONDUCT.md
+CHANGELOG.md

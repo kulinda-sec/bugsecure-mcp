@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+
+# Personal Claude Code settings (shared ones under .claude/ may be committed).
+.claude/settings.local.json

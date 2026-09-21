@@ -1,0 +1,6 @@
+# Tool: list_my_certificates (profile:read). Only the fields in CertificateFields.
+query ListMyCertificates {
+  myCertificates {
+    ...CertificateFields
+  }
+}

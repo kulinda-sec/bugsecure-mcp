@@ -1,0 +1,12 @@
+# Tool: search (programs:read; reports only with reports:read / triage:read)
+query Search($query: String!, $types: [String!], $limit: Int!, $offset: Int!) {
+  search(query: $query, types: $types, limit: $limit, offset: $offset) {
+    type
+    id
+    slug
+    title
+    status
+    highlight
+    rank
+  }
+}

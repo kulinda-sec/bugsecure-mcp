@@ -1,0 +1,15 @@
+# Tool: get_leaderboard (programs:read)
+query GetLeaderboard($limit: Int!, $timeRange: String, $country: String) {
+  leaderboard(limit: $limit, timeRange: $timeRange, country: $country) {
+    rank
+    username
+    isAmbassador
+    profile {
+      userId
+      country
+      level
+      xp
+      reputation
+    }
+  }
+}

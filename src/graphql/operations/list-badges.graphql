@@ -1,0 +1,16 @@
+# Tool: list_badges (programs:read)
+query ListBadges {
+  badgeCatalog {
+    id
+    slug
+    name
+    description
+    state
+    hidden
+    awardedAt
+    progress {
+      current
+      threshold
+    }
+  }
+}

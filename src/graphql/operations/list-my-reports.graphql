@@ -1,0 +1,6 @@
+# Tool: list_my_reports (reports:read)
+query ListMyReports($filters: ReportFilterInput, $skip: Int!, $take: Int!) {
+  reports(filters: $filters, skip: $skip, take: $take) {
+    ...ReportSummary
+  }
+}

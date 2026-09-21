@@ -1,0 +1,57 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Let new releases age before we adopt them (supply-chain hygiene).
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    open-pull-requests-limit: 10
+    versioning-strategy: increase
+    # Node majors move together, by hand: .nvmrc, both Dockerfile stages and @types/node.
+    ignore:
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
+    labels: [dependencies]
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      mcp-sdk:
+        patterns: ['@modelcontextprotocol/*']
+      production:
+        dependency-type: production
+        update-types: [minor, patch]
+      development:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: 'ci(deps)'
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    # The build stage's Node major must match the distroless runtime's (see the npm entry).
+    ignore:
+      - dependency-name: node
+        update-types: [version-update:semver-major]
+    cooldown:
+      default-days: 7
+    labels: [dependencies]
+    commit-message:
+      prefix: 'chore(docker)'

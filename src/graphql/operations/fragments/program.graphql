@@ -1,0 +1,30 @@
+# Programme fields shared by the programme tools. Keep these lean: every field
+# selected here must also exist in schema/bugsecure.graphql (re-run
+# `pnpm prune-schema <full-schema>` after adding one).
+
+fragment ProgramSummary on ProgramModel {
+  id
+  slug
+  title
+  status
+  visibility
+  startDate
+  endDate
+  updatedAt
+  organization {
+    id
+    name
+    slug
+  }
+}
+
+fragment ProgramDetail on ProgramModel {
+  ...ProgramSummary
+  description
+  rules
+  scope
+  outOfScope
+  rewardGrid
+  currency
+  createdAt
+}

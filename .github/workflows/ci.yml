@@ -1,0 +1,151 @@
+# Required status checks (repository ruleset .github/rulesets/main.json) —
+# do not rename these jobs without updating the ruleset in the same change:
+#   "CI passed"                        this workflow's aggregate job (below)
+#   "Conventional Commits title"       pr-title.yml
+#   "Analyze (javascript-typescript)"  codeql.yml
+#   "Analyze (actions)"                codeql.yml
+# Only "CI passed" is required from this workflow: add new jobs to its `needs`
+# instead of adding them to the ruleset.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Every job declares exactly the permissions it needs.
+permissions: {}
+
+# Supersede in-flight runs on a pull request only. Every push to main gets its
+# own group (run id): a shared group would let a newer run cancel a PENDING
+# older one even with cancel-in-progress false, and each main run must finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Format, codegen, lint, typecheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run format:check
+      - run: pnpm run hygiene
+      - run: pnpm run codegen:check
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+
+  test:
+    name: Test (Node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+        os: [ubuntu-latest]
+        include:
+          # Credential storage, file permissions and the browser/loopback flow are platform-specific.
+          - node: 24
+            os: macos-latest
+          - node: 24
+            os: windows-latest
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        if: runner.os == 'Linux'
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Build first: the stdio end-to-end test spawns dist/cli.js (and fails without it).
+      - run: pnpm run build
+      - run: pnpm run test:coverage
+      - name: Smoke-test the binary
+        run: node dist/cli.js --help && node dist/cli.js --version
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: matrix.node == 24 && matrix.os == 'ubuntu-latest'
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 14
+
+  package:
+    name: Package & container
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Pack and list the published files
+        run: |
+          pnpm pack --pack-destination "$RUNNER_TEMP"
+          tar -tzf "$RUNNER_TEMP"/*.tgz | sort | tee "$RUNNER_TEMP/files.txt"
+          # Nothing but the allowlist may ship. (`if`, not a bare `! grep`:
+          # bash's errexit ignores a negated command, so only the last one counted.)
+          if grep -Ev '^package/(dist/|package\.json$|README\.md$|LICENSE$|NOTICE$|CHANGELOG\.md$)' "$RUNNER_TEMP/files.txt"; then
+            echo "::error::files outside the allowlist would be published"; exit 1
+          fi
+          grep -qx 'package/CHANGELOG.md' "$RUNNER_TEMP/files.txt"
+          if grep -E '\.test\.(js|d\.ts)' "$RUNNER_TEMP/files.txt"; then
+            echo "::error::test files would be published"; exit 1
+          fi
+      - name: Build the hosted-mode image
+        run: docker build --pull --tag bugsecure-mcp:ci .
+      - name: Image runs as non-root and prints help
+        run: |
+          test "$(docker inspect --format '{{.Config.User}}' bugsecure-mcp:ci)" != ""
+          docker run --rm bugsecure-mcp:ci --help
+
+  # The single required check from this workflow. `if: always()` makes it run
+  # (and fail) when a needed job failed or was cancelled; without it the job
+  # would be skipped, and GitHub counts a skipped required check as passing.
+  # No job above is conditional, so anything but success fails.
+  ci-passed:
+    name: CI passed
+    needs: [check, test, package]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - name: Every needed job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          printf '%s\n' "$NEEDS" | jq -e 'all(.[]; .result == "success")' > /dev/null

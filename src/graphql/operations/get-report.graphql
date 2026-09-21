@@ -1,0 +1,26 @@
+# Tool: get_report (reports:read) — one of the caller's own reports, researcher side.
+query GetReport($id: ID!) {
+  report(id: $id) {
+    ...ReportDetail
+  }
+  reportComments(reportId: $id) {
+    ...ReportCommentFields
+  }
+  reportTransitions(reportId: $id) {
+    ...ReportTransitionFields
+  }
+  reportAdjudication(reportId: $id) {
+    ...AdjudicationFields
+  }
+  reportAppeals(reportId: $id) {
+    ...AppealFields
+  }
+}
+
+# The public disclosure draft of the report (disclosures:write; researcher side only).
+# Sent only when the token holds that scope: it is also what save_disclosure_draft edits.
+query GetReportDisclosure($reportId: String!) {
+  reportDisclosureDraft(reportId: $reportId) {
+    ...DisclosureDraftFields
+  }
+}

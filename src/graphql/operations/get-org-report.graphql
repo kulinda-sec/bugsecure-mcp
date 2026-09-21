@@ -1,0 +1,22 @@
+# Tool: get_org_report (triage:read) — a report of an opted-in organization, organization side.
+query GetOrgReport($id: ID!) {
+  report(id: $id) {
+    ...ReportDetail
+    assignedTriage {
+      id
+      username
+    }
+  }
+  reportComments(reportId: $id) {
+    ...ReportCommentFields
+  }
+  reportTransitions(reportId: $id) {
+    ...ReportTransitionFields
+  }
+  reportAdjudication(reportId: $id) {
+    ...AdjudicationFields
+  }
+  reportAppeals(reportId: $id) {
+    ...AppealFields
+  }
+}

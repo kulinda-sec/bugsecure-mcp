@@ -1,0 +1,49 @@
+# cocogitto (https://docs.cocogitto.io): release versioning and changelog from
+# Conventional Commits. Maintainers release with `cog bump --auto`; see
+# CONTRIBUTING.md § Releasing. Contributors don't need cog: the commit-msg hook
+# (scripts/check-commit-msg.ts) checks headers without it.
+#
+# Baseline: v0.1.0 is released with the hand-written CHANGELOG entry; bump and
+# changelog only read commits since the latest tag, so later releases append
+# generated sections above it.
+tag_prefix = "v"
+ignore_merge_commits = true
+branch_whitelist = ["main"]
+
+# The Release workflow publishes only when the tag equals package.json#version,
+# so the version is set before cog commits and tags. The full gate runs first.
+pre_bump_hooks = [
+  "pnpm run check",
+  "node -e \"const f='package.json',fs=require('node:fs'),p=JSON.parse(fs.readFileSync(f,'utf8'));p.version='{{version}}';fs.writeFileSync(f,JSON.stringify(p,null,2)+'\\n')\"",
+]
+
+# cog creates the tag unsigned; re-create it signed (git's tag.gpgSign and
+# user.signingkey decide the key). The image build verifies tag signatures.
+post_bump_hooks = [
+  "git tag -f -s v{{version}} -m \"Release {{version}}\"",
+]
+
+[changelog]
+path = "CHANGELOG.md"
+template = "remote"
+remote = "github.com"
+owner = "kulinda-sec"
+repository = "bugsecure-mcp"
+authors = [
+  { signature = "16973742+baakeydow@users.noreply.github.com", username = "baakeydow" },
+]
+
+# Changelog sections per type; noise types are omitted from the changelog only
+# (bump still reads every type to pick the version).
+[commit_types]
+feat = { changelog_title = "Features" }
+fix = { changelog_title = "Bug Fixes" }
+perf = { changelog_title = "Performance Improvements" }
+refactor = { changelog_title = "Code Refactoring" }
+docs = { changelog_title = "Documentation" }
+chore = { changelog_title = "Chores" }
+revert = { changelog_title = "Reverts" }
+test = { omit_from_changelog = true }
+build = { omit_from_changelog = true }
+ci = { omit_from_changelog = true }
+style = { omit_from_changelog = true }

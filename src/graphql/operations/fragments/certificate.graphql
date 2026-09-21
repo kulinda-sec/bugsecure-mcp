@@ -1,0 +1,21 @@
+# Payout certificate fields shared by list_my_certificates and list_org_certificates.
+# Only the fields below: one field refused to OAuth clients fails the whole operation.
+fragment CertificateFields on PayoutCertificateModel {
+  id
+  reference
+  reportId
+  adjudicationId
+  status
+  graderSide
+  criticalReviewOutcome
+  currency
+  grossAmount
+  withheldAmount
+  netAmount
+  issuedAt
+  appealClosesAt
+  dueAt
+  disputeClosesAt
+  isOverdue
+  voidReason
+}

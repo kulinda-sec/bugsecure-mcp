@@ -1,0 +1,113 @@
+# Report fields shared by the report and triage tools. Never select anything the
+# API refuses to OAuth clients (see README § Scopes): one refused field fails the
+# whole operation.
+
+# What every report view shows. Lists add the grade in brief (ReportSummary);
+# the full views return the whole adjudication instead.
+fragment ReportCore on ReportModel {
+  id
+  title
+  status
+  claimedSeverity
+  createdAt
+  updatedAt
+  program {
+    id
+    title
+    slug
+  }
+  reporter {
+    id
+    username
+  }
+  triageDueAt
+  isOverdue
+  awaitingGrade
+}
+
+fragment ReportSummary on ReportModel {
+  ...ReportCore
+  grade {
+    severity
+    side
+    certifiedAmount
+    currency
+  }
+}
+
+fragment ReportDetail on ReportModel {
+  ...ReportCore
+  claimedCvssScore
+  claimedCvssVector
+  description
+  stepsToReproduce
+  impact
+  remediation
+  duplicateOfId
+  boundRewardGrid
+  attachments {
+    id
+    fileName
+    contentType
+    fileSize
+    scanStatus
+    fileAccess
+  }
+}
+
+fragment ReportCommentFields on ReportCommentModel {
+  id
+  authorId
+  content
+  isInternal
+  createdAt
+}
+
+fragment ReportTransitionFields on ReportStatusTransitionModel {
+  id
+  fromStatus
+  toStatus
+  reason
+  createdAt
+}
+
+# The grade in force (reportAdjudication): only the fields below.
+fragment AdjudicationFields on AdjudicationModel {
+  id
+  severity
+  cvssVersion
+  cvssVector
+  cvssScore
+  cweId
+  vrtNodeId
+  amount
+  currency
+  amountBasis
+  amountReason
+  reasoning
+  deviationReason
+  decisionVector
+  supersedesId
+  side
+  awaitingCriticalReview
+  criticalReviewDueAt
+  criticalReview {
+    outcome
+    createdAt
+    supersedingAdjudicationId
+  }
+  createdAt
+}
+
+# Appeals on a report (reportAppeals): only the fields below.
+fragment AppealFields on SeverityAppealModel {
+  id
+  adjudicationId
+  raisedBy
+  status
+  grounds
+  decision
+  createdAt
+  decidedAt
+  resultingAdjudicationId
+}

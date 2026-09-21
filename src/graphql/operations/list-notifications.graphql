@@ -1,0 +1,11 @@
+# Tool: list_notifications (profile:read)
+query ListNotifications($skip: Int!, $take: Int!, $unreadOnly: Boolean!) {
+  notifications(skip: $skip, take: $take, unreadOnly: $unreadOnly) {
+    id
+    type
+    title
+    body
+    createdAt
+    readAt
+  }
+}

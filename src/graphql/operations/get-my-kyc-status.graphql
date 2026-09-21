@@ -1,0 +1,11 @@
+# Tool: get_my_kyc_status (profile:read). The status only, never the documents themselves.
+query GetMyKycStatus {
+  me {
+    kycStatus
+  }
+  myKycStatus {
+    isComplete
+    hasIdDocument
+    hasProofOfAddress
+  }
+}

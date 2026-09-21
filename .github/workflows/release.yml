@@ -1,0 +1,393 @@
+name: Release
+
+# A release is a signed version tag on main (cut with `make release`, see
+# CONTRIBUTING § Releasing). Pushing it runs:
+#
+#   verify          the tag is a signed annotated tag on main, equals
+#                   package.json#version, and the full gate passes
+#                   (`hygiene:release`, `pnpm run check`)
+#   publish         npm, with trusted publishing (OIDC) and provenance; there
+#                   is no npm token in this repository   (environment `npm`)
+#   deploy          the hosted server: image built from the tag, pushed to ECR
+#                   by version, attested, rolled out to ECS by digest, smoke-
+#                   tested, rolled back on failure; keyless AWS OIDC
+#                                                  (environment `production`)
+#   github-release  the GitHub release page, once npm has the package
+#
+# publish and deploy both need only verify and run in parallel: they ship the
+# same verified commit to independent places, and neither should hold the
+# other hostage (an AWS problem must not block the npm release, nor an npm
+# outage a hosted fix). github-release follows publish only: the release page
+# documents the package; a failed deploy has already been rolled back and is
+# retried with workflow_dispatch, without re-releasing.
+#
+# workflow_dispatch ON A RELEASE TAG redeploys it — a retry, or a rollback to
+# an older release: `gh workflow run release.yml --ref vX.Y.Z`. Same verify
+# rules, re-uses the immutable image, skips npm and the release page. It must
+# run on the tag ref: the AWS release role trusts only this repository's
+# `production` environment on refs/tags/v*.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+', 'v[0-9]+.[0-9]+.[0-9]+-*']
+  workflow_dispatch:
+
+permissions: {}
+
+# One run per tag, never cancelled.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MCP_ORIGIN: https://bugsecure-mcp.senintel.sn
+
+jobs:
+  verify:
+    name: Verify the tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      # A dispatch can pick any ref: fail early unless it is a release tag.
+      - name: Resolve the tag
+        id: tag
+        run: |
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "::error::run this workflow on a release tag: gh workflow run release.yml --ref vX.Y.Z (got $GITHUB_REF)"
+            exit 1
+          fi
+          TAG="$GITHUB_REF_NAME"
+          if ! printf '%s' "$TAG" | grep -Eqx 'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?'; then
+            echo "::error::not a release tag: $TAG"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      # Full history: the ancestry check needs main and the tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag is signed, on main, and matches package.json
+        id: commit
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          git fetch --quiet --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          SHA="$(git rev-parse --verify "refs/tags/$TAG^{commit}")"
+          test "$(git rev-parse HEAD)" = "$SHA"
+          # Releases are signed annotated tags (cog.toml post_bump_hooks), never lightweight.
+          if ! git cat-file tag "refs/tags/$TAG" 2> /dev/null | grep -Eq -- '-----BEGIN (SSH|PGP) SIGNATURE-----'; then
+            echo "::error::$TAG is not a signed annotated tag"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SHA" refs/remotes/origin/main; then
+            echo "::error::$TAG ($SHA) is not on main"
+            exit 1
+          fi
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag $TAG does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          # No dependency cache on the release path: a poisoned cache must not reach a release.
+          # Explicit, so a future setup-node default or packageManager change cannot turn it on.
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      # Fails while any TODO(lead) placeholder remains in a public document.
+      - run: pnpm run hygiene:release
+      - run: pnpm run check
+
+  publish:
+    name: Publish to npm
+    needs: verify
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: npm # protected environment: required reviewer + tag policy v*
+    permissions:
+      contents: read
+      id-token: write # OIDC for npm trusted publishing + provenance
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+          # No dependency cache in the publishing job: a poisoned cache must not reach a release.
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - name: Pack
+        run: pnpm pack --pack-destination "$RUNNER_TEMP/pkg" # prepack builds dist/
+      - name: Publish (trusted publishing, with provenance)
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          # Trusted publishing needs npm >= 11.5.1.
+          npm --version
+          DIST_TAG=latest
+          case "$TAG" in *-*) DIST_TAG=next ;; esac
+          npm publish "$RUNNER_TEMP"/pkg/*.tgz --provenance --access public --tag "$DIST_TAG"
+
+  deploy:
+    name: Deploy the hosted server
+    needs: verify
+    # Native ARM64: the ECS task is ARM64 Fargate, so no emulation.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    environment:
+      name: production # protected environment: required reviewer + tag policy v*
+      url: https://bugsecure-mcp.senintel.sn/healthz
+    # Deploys are serialised across tags.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # OIDC: AWS role, and Sigstore signing of the attestation
+      attestations: write # store the image provenance attestation
+    env:
+      TAG: ${{ needs.verify.outputs.tag }}
+      SHA: ${{ needs.verify.outputs.sha }}
+      REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      CLUSTER: ${{ vars.ECS_CLUSTER }}
+      SERVICE: ${{ vars.ECS_SERVICE }}
+      FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+      CONTAINER: bugsecure-mcp
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          persist-credentials: false
+      # The role ARN is a `production` environment SECRET, not a variable:
+      # GitHub prints a step's `with:` and `env:` values in the log header
+      # before any ::add-mask:: can run, and this repository's logs are
+      # public. Secrets are masked from the start.
+      - name: AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: bugsecure-mcp-release
+          role-duration-seconds: 3600
+          mask-aws-account-id: true
+      # Belt and braces: the registry host (ECR login output, image refs,
+      # docker push output) and every ARN below contain it. Masks are
+      # substring matches, so this covers all of them for the rest of the job.
+      - name: Mask the AWS account id
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+      - name: ECR login
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+        with:
+          mask-password: 'true'
+
+      # Prod ECR tags are IMMUTABLE and a rebuild is not bit-for-bit
+      # reproducible, so a tag is built at most once. If it already exists (a
+      # redeploy, or a re-run) it is re-used only when it was built from this
+      # very commit; a tag holding anything else fails the deploy.
+      - name: Build and push the image
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          # Already masked through the account id; the whole host too, in case.
+          echo "::add-mask::$REGISTRY"
+          IMAGE="$REGISTRY/$REPOSITORY"
+          digest_of_tag() {
+            local out
+            if out="$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids "imageTag=$TAG" \
+              --query 'imageDetails[0].imageDigest' --output text 2> "$RUNNER_TEMP/ecr.err")"; then
+              printf '%s' "$out"
+            elif grep -q ImageNotFoundException "$RUNNER_TEMP/ecr.err"; then
+              printf ''
+            else
+              cat "$RUNNER_TEMP/ecr.err" >&2
+              return 1
+            fi
+          }
+          same_commit_or_fail() {
+            local revision
+            docker pull --quiet "$IMAGE@$1" > /dev/null
+            revision="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE@$1")"
+            if [ "$revision" != "$SHA" ]; then
+              echo "::error::$REPOSITORY:$TAG already exists with a different digest ($1), built from ${revision:-an unknown commit}, not $SHA"
+              exit 1
+            fi
+            echo "$REPOSITORY:$TAG already exists, built from $SHA: re-using $1"
+          }
+          DIGEST="$(digest_of_tag)"
+          if [ -n "$DIGEST" ]; then
+            same_commit_or_fail "$DIGEST"
+          else
+            # A plain single-platform manifest: provenance is attested below
+            # (GitHub attestation), not pushed as an extra manifest.
+            if ! docker buildx build \
+              --platform linux/arm64 \
+              --pull \
+              --provenance=false \
+              --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$SHA" \
+              --label "org.opencontainers.image.version=$TAG" \
+              --tag "$IMAGE:$TAG" \
+              --push \
+              .; then
+              # Lost a race with another push of the same (immutable) tag?
+              DIGEST="$(digest_of_tag)"
+              [ -n "$DIGEST" ] || exit 1
+              same_commit_or_fail "$DIGEST"
+            fi
+            DIGEST="$(digest_of_tag)"
+            [ -n "$DIGEST" ] || { echo "::error::pushed, but $REPOSITORY:$TAG is not in ECR"; exit 1; }
+          fi
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Image $REPOSITORY:$TAG = $DIGEST"
+
+      # The subject name is the repository name only: the registry host
+      # contains the account id, and a public repository's attestations are
+      # recorded in the public Sigstore transparency log. Verification matches
+      # on the digest:
+      #   gh attestation verify oci://<registry>/<repository>:<tag> -R kulinda-sec/bugsecure-mcp
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ vars.ECR_REPOSITORY }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: false
+          create-storage-record: false
+
+      # Base: the LATEST ACTIVE revision of the family, which Terraform owns
+      # (environment, secrets, roles, cpu/memory) — not whatever the service
+      # runs. Only the image changes, pinned by digest. Tags are copied in the
+      # same call (the role may tag only as part of RegisterTaskDefinition).
+      - name: Register the task definition
+        id: taskdef
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          set -euo pipefail
+          PREVIOUS="$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].taskDefinition' --output text)"
+          # A full family:revision ARN: the rollback below must name one (the role denies anything else).
+          case "$PREVIOUS" in arn:aws:ecs:*:task-definition/*:[0-9]*) ;; *) echo "::error::service $SERVICE not found in $CLUSTER"; exit 1 ;; esac
+          aws ecs describe-task-definition --task-definition "$FAMILY" --include TAGS --output json > "$RUNNER_TEMP/base.json"
+          jq -e --arg c "$CONTAINER" '[.taskDefinition.containerDefinitions[] | select(.name == $c)] | length == 1' \
+            "$RUNNER_TEMP/base.json" > /dev/null || { echo "::error::no single container $CONTAINER in $FAMILY"; exit 1; }
+          jq --arg c "$CONTAINER" --arg image "$IMAGE" '
+            (.tags // []) as $tags
+            | .taskDefinition
+            | (.containerDefinitions[] | select(.name == $c) | .image) = $image
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
+                  .registeredAt, .registeredBy, .deregisteredAt)
+            | if ($tags | length) > 0 then . + {tags: $tags} else . end
+          ' "$RUNNER_TEMP/base.json" > "$RUNNER_TEMP/taskdef.json"
+          ARN="$(aws ecs register-task-definition --cli-input-json "file://$RUNNER_TEMP/taskdef.json" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)"
+          echo "previous=$PREVIOUS" >> "$GITHUB_OUTPUT"
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+          echo "Registered ${ARN##*/} from ${FAMILY}'s latest revision (service was on ${PREVIOUS##*/})"
+
+      - name: Update the service
+        id: update
+        env:
+          ARN: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$ARN" \
+            --query 'service.serviceName' --output text
+
+      # The deployment circuit breaker can roll back on its own, after which
+      # the service is "stable" on the OLD revision: check which one it runs.
+      - name: Wait for the rollout
+        env:
+          ARN: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          set -euo pipefail
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+          read -r CURRENT ROLLOUT < <(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query "services[0].[taskDefinition, deployments[?status=='PRIMARY'] | [0].rolloutState]" --output text)
+          if [ "$CURRENT" != "$ARN" ] || [ "$ROLLOUT" != COMPLETED ]; then
+            echo "::error::rollout did not complete: service is on ${CURRENT##*/} ($ROLLOUT)"
+            exit 1
+          fi
+          echo "Service is on ${CURRENT##*/}"
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          CURL=(curl --silent --show-error --max-time 10 --retry 5 --retry-delay 5 --retry-all-errors)
+          # 1. Health.
+          "${CURL[@]}" --fail --output /dev/null "$MCP_ORIGIN/healthz"
+          # 2. RFC 9728 metadata names this resource.
+          "${CURL[@]}" --fail "$MCP_ORIGIN/.well-known/oauth-protected-resource/mcp" > "$RUNNER_TEMP/prm.json"
+          jq -e --arg r "$MCP_ORIGIN/mcp" '.resource == $r' "$RUNNER_TEMP/prm.json" > /dev/null \
+            || { echo "::error::protected resource metadata does not name $MCP_ORIGIN/mcp"; exit 1; }
+          # 3. An unauthenticated MCP request is challenged and pointed at the metadata.
+          STATUS="$("${CURL[@]}" --output /dev/null --dump-header "$RUNNER_TEMP/headers" --write-out '%{http_code}' \
+            --request POST "$MCP_ORIGIN/mcp" \
+            --header 'content-type: application/json' \
+            --header 'accept: application/json, text/event-stream' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"ping"}')"
+          if [ "$STATUS" != 401 ]; then
+            echo "::error::POST /mcp without a token answered $STATUS, expected 401"
+            exit 1
+          fi
+          grep -iq '^www-authenticate:.*resource_metadata=' "$RUNNER_TEMP/headers" \
+            || { echo "::error::401 without resource_metadata in WWW-Authenticate"; exit 1; }
+          echo "Smoke test passed"
+
+      - name: Roll back
+        if: failure() && steps.update.outcome == 'success'
+        env:
+          PREVIOUS: ${{ steps.taskdef.outputs.previous }}
+        run: |
+          echo "::error::deploy failed: rolling $SERVICE back to ${PREVIOUS##*/}"
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$PREVIOUS" \
+            --query 'service.serviceName' --output text
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+
+  github-release:
+    name: GitHub release
+    needs: [verify, publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          PRERELEASE=()
+          case "$TAG" in *-*) PRERELEASE=(--prerelease) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes "${PRERELEASE[@]}"

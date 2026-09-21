@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "bugsecure-dev": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["dist/cli.js"],
+      "env": {
+        "BUGSECURE_API_URL": "${BUGSECURE_API_URL:-http://localhost:8943}"
+      }
+    },
+    "bugsecure": {
+      "type": "http",
+      "url": "https://bugsecure-mcp.senintel.sn/mcp"
+    }
+  }
+}

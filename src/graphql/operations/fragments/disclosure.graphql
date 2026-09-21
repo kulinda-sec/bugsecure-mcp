@@ -1,0 +1,17 @@
+# A report's public disclosure draft, as its researcher sees it (disclosures:write).
+fragment DisclosureDraftFields on DisclosureDraftStateModel {
+  side
+  draft {
+    revision
+    title
+    summary
+    writeup
+    creditResearcher
+    severity
+    certifiedReward
+    researcherApproved
+    organizationApproved
+    publishedAt
+    isPublic
+  }
+}

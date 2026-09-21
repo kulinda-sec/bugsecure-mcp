@@ -1,0 +1,8 @@
+# Tool: list_org_certificates (triage:read) — what an opted-in organisation owes, never how it pays.
+query ListOrgCertificates($orgId: ID!, $status: CertificateStatus, $reportId: ID, $skip: Int!, $take: Int!) {
+  organizationCertificates(orgId: $orgId, status: $status, reportId: $reportId, skip: $skip, take: $take) {
+    ...CertificateFields
+    researcherId
+    researcherUsername
+  }
+}

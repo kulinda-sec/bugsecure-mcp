@@ -1,0 +1,7 @@
+# Fast checks on what is being committed. Check-only on purpose: rewriting and
+# restaging files here would also sweep unstaged hunks into the commit.
+# `pnpm format` fixes formatting; `pnpm run check` is the full gate (pre-push).
+if [ -n "$(git diff --cached --name-only --diff-filter=ACMR)" ]; then
+  git diff --cached --name-only -z --diff-filter=ACMR | xargs -0 pnpm exec prettier --check --ignore-unknown
+fi
+pnpm run --silent hygiene

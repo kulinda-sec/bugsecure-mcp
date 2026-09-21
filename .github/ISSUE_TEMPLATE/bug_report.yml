@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in bugsecure-mcp does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issues must not be reported here** — use [private vulnerability reporting](https://github.com/kulinda-sec/bugsecure-mcp/security/advisories/new).
+        Never paste tokens, report contents or other personal data into an issue.
+  - type: input
+    id: version
+    attributes:
+      label: bugsecure-mcp version
+      description: Output of `npx -y @kulinda-sec/bugsecure-mcp --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: [Local (stdio), Hosted (streamable HTTP)]
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: MCP client and version
+      placeholder: e.g. Claude Desktop 2.3, Cursor 2.1, VS Code 1.105
+  - type: input
+    id: platform
+    attributes:
+      label: OS and Node.js version
+      placeholder: e.g. macOS 26, Node 24.21
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant stderr log lines
+      description: bugsecure-mcp redacts secrets from its logs, but please double-check before pasting.
+      render: text

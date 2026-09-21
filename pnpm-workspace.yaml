@@ -1,0 +1,15 @@
+# pnpm settings (pnpm reads these from pnpm-workspace.yaml even in a single-package repo).
+
+# Supply chain: refuse versions published less than 24 h ago (most malicious
+# releases are caught and unpublished within hours) ...
+minimumReleaseAge: 1440
+# ... refuse a version whose provenance/trust evidence is weaker than an
+# earlier release of the same package ...
+trustPolicy: no-downgrade
+# ... and refuse transitive dependencies from git URLs or tarballs.
+blockExoticSubdeps: true
+
+# No dependency is allowed to run install scripts. If one ever needs to, it
+# has to be allow-listed here explicitly and reviewed.
+strictDepBuilds: true
+allowBuilds: {}

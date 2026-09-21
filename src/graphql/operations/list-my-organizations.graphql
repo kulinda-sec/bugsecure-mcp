@@ -1,0 +1,11 @@
+# Tool: list_my_organizations (triage:read). Only the fields below: one field refused to OAuth
+# clients fails the whole operation.
+query ListMyOrganizations {
+  myOrganizations {
+    id
+    name
+    slug
+    aiTriageAccessEnabled
+    aiGradingEnabled
+  }
+}
