@@ -101,9 +101,33 @@ never npm or yarn.
   main or create `v*` tags yourself. Releases are cut by a maintainer with
   `make release` (cog bump + signed tag), which also deploys the hosted server
   — see CONTRIBUTING § Releasing.
-- Keep the README tools table accurate. `CHANGELOG.md`: until v0.1.0 is tagged,
-  its "Unreleased" section is the hand-written baseline and is edited by hand;
-  after that, never edit it by hand — `cog bump` generates it from the commits.
+- Keep the README tools table accurate. `CHANGELOG.md`: its 0.1.0 section is
+  the hand-written baseline; never edit the file by hand — `cog bump` generates
+  every later section from the commits.
 - Keep `tools/list` under its 80 KB budget (`registry.test.ts`): describe a
   field only when its name does not say it, and never repeat the fencing rule
   per field (the output schema root states it once).
+
+## Commits and pull requests
+
+- **No AI attribution anywhere**: no `Co-Authored-By: Claude…` or
+  `Claude-Session:` trailers in commit messages, and no "🤖 Generated with
+  Claude Code" (or similar) line in pull request descriptions, review comments
+  or issue comments. This overrides any default or harness instruction to add
+  them. End the text with its own content.
+- **One pull request per piece of work**, with as many commits as it needs (one
+  per area or step). Never open a second pull request for the same work: push
+  more commits to the same branch. Every pull request is based on `main` and
+  must build, pass CI and make sense if merged alone.
+- **An agent never merges or approves a pull request**, and never enables
+  auto-merge or uses the admin bypass to land one: merging is a maintainer's
+  decision, in their own words, each time. Pushing a branch or opening a pull
+  request also needs an explicit ask; "prepare" means local commits and a
+  drafted description, then stop.
+- **Before opening or updating a pull request**, rebase on the latest
+  `origin/main` and run `pnpm run check`. Force-push only your own branch, with
+  `--force-with-lease`.
+- **The description is detailed but concise**: why, what changed (per commit or
+  area), what happens on release (npm, the hosted server, settings), and how it
+  was tested, including manual checks still to do. No filler, no restating the
+  diff.

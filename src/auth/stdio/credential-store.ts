@@ -11,7 +11,7 @@
  * authorization spec requires (SEP-2352): tokens from one issuer are never
  * offered to another.
  */
-import { chmod, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
+import { chmod, type FileHandle, mkdir, open, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -99,17 +99,25 @@ export const createFileStore = (dir: string, logger: Logger): CredentialStore =>
   const path = join(dir, 'credentials.json');
 
   const readAll = async (): Promise<Record<string, unknown>> => {
-    let raw: string;
+    // One handle for the check, the chmod and the read: by path, the file
+    // could be swapped between them.
+    let handle: FileHandle;
     try {
-      const info = await stat(path);
-      if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) {
-        logger.warn('credentials file was readable by other users; restricting it to 0600', { path });
-        await chmod(path, 0o600);
-      }
-      raw = await readFile(path, 'utf8');
+      handle = await open(path, 'r');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
       throw error;
+    }
+    let raw: string;
+    try {
+      const info = await handle.stat();
+      if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) {
+        logger.warn('credentials file was readable by other users; restricting it to 0600', { path });
+        await handle.chmod(0o600);
+      }
+      raw = await handle.readFile('utf8');
+    } finally {
+      await handle.close();
     }
     try {
       const parsed = FileSchema.safeParse(JSON.parse(raw));
