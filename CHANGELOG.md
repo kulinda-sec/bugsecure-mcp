@@ -3,15 +3,15 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0.0, minor
-versions may contain breaking changes. The "Unreleased" section below is the
-hand-written entry for the first release, 0.1.0; from 0.2.0 on, release sections
+versions may contain breaking changes. The 0.1.0 section below is the
+hand-written entry for the first release; from 0.2.0 on, release sections
 are generated from the commit history by [cocogitto](https://docs.cocogitto.io)
 (`cog bump`), newest first, above the separator below, and this file is no
 longer edited by hand.
 
 - - -
 
-## [Unreleased]
+## [0.1.0] - 2026-09-25
 
 ### Added
 
