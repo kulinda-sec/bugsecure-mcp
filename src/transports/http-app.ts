@@ -144,9 +144,11 @@ export const createHttpApp = (options: HttpAppOptions): HttpApp => {
   // find it from `resource_metadata` in every 401, or by that derivation.
   const metadataPath = new URL(metadataUrl).pathname;
   // Scope minimization (spec: authorization § Scope Selection Strategy): the
-  // metadata and the initial 401 advertise the default scopes only (the read
-  // scopes and reports:write); other write scopes are requested on demand,
-  // through the 403 step-up below.
+  // metadata and the initial 401 advertise the default scopes (the read scopes
+  // and reports:write) plus the scopes only some accounts can hold, which
+  // consent grants or lists as unavailable and which are never stepped up
+  // (HOSTED_INITIAL_SCOPES). The remaining write scope, notifications:write, is
+  // requested on demand through the 403 step-up below.
   const metadata = buildProtectedResourceMetadata({
     resource: config.resource,
     issuer: config.issuer,
@@ -284,8 +286,10 @@ export const createHttpApp = (options: HttpAppOptions): HttpApp => {
    * `profile:write` and `disclosures:write`). The authorization server silently
    * drops those for an ineligible account, so a step-up would send it round the
    * consent screen for ever. A call missing only those reaches the tool, whose
-   * error explains who is eligible. Researchers get their two on first
-   * connection instead (`HOSTED_INITIAL_SCOPES`).
+   * error explains who is eligible. They are all requested on first connection
+   * instead (`HOSTED_INITIAL_SCOPES`), where consent shows the ones this account
+   * can hold; an eligible user who unticked one, or became eligible since,
+   * gets it by disconnecting and connecting again.
    *
    * Unknown tools, and write tools on a read-only deployment, fall through to
    * the SDK's ordinary "tool not found" error.

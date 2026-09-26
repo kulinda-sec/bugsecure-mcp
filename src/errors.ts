@@ -73,11 +73,19 @@ export const ORG_SCOPE_ELIGIBILITY =
 export const RESEARCHER_SCOPE_ELIGIBILITY =
   'profile:write and disclosures:write are only granted to researcher accounts.';
 
+/**
+ * How to get a scope this connection lacks. Hosted: a client that merely
+ * reconnects with the token it already holds asks for nothing, so the user
+ * must drop the saved sign-in first; a fresh connection then asks for every
+ * scope the server needs, and the consent screen offers the ones this account
+ * can hold.
+ */
 const reauthorize = (mode: AuthMode, scopes: readonly Scope[]): string => {
   const list = formatScopes(scopes);
   return mode === 'local'
     ? `Ask the user to run \`${cli} login --scopes "${list}"\` in a terminal, then restart their MCP client.`
-    : `Ask the user to reconnect BugSecure in their MCP client and approve: ${list}.`;
+    : 'Ask the user to disconnect BugSecure in their MCP client, removing its saved sign-in, then ' +
+        `reconnect BugSecure in their MCP client and approve: ${list}.`;
 };
 
 /**

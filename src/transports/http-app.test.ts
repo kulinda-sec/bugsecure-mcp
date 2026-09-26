@@ -2,6 +2,7 @@ import { type Client, StreamableHTTPClientTransport } from '@modelcontextprotoco
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { fakeAuthorizationServer } from '../../test/helpers/fake-authorization-server.js';
+import { lookups } from '../../test/helpers/fake-graphql.js';
 import {
   type ApprovalAnswer,
   type ElicitationPrompt,
@@ -58,16 +59,22 @@ const setup = (env: Record<string, string> = {}, api?: ApiOverride): Setup => {
     const override = api?.(authorization);
     if (override) return override;
     const body = typeof init?.body === 'string' ? init.body : '';
-    const data = body.includes('AddReportComment')
-      ? {
-          addReportComment: {
-            id: 'c1',
-            reportId: 'r1',
-            isInternal: false,
-            createdAt: '2026-09-21T10:00:00Z',
-          },
-        }
-      : { programs: [] };
+    const { query, variables } = JSON.parse(body) as { query: string; variables?: Record<string, unknown> };
+    const operation = /\b(?:query|mutation)\s+(\w+)/.exec(query)?.[1] ?? '';
+    const org = lookups();
+    const data =
+      operation === 'AddReportComment' || operation === 'AddTriageComment'
+        ? {
+            addReportComment: {
+              id: 'c1',
+              reportId: 'r1',
+              isInternal: operation === 'AddTriageComment',
+              createdAt: '2026-09-21T10:00:00Z',
+            },
+          }
+        : operation in org
+          ? org[operation]?.(variables ?? {})
+          : { programs: [] };
     return new Response(JSON.stringify({ data }), { headers: { 'content-type': 'application/json' } });
   };
   const app = createHttpApp({
@@ -133,14 +140,17 @@ describe('protected resource metadata (RFC 9728)', () => {
     expect(await res.json()).toEqual({
       resource: TEST_RESOURCE,
       authorization_servers: [TEST_ISSUER],
-      // Minimal set for basic use (spec: Scope Selection Strategy), plus the
-      // researcher-only writes, which are never stepped up (they would loop).
+      // Minimal set for basic use (spec: Scope Selection Strategy), plus every
+      // scope only some accounts can hold: never stepped up (they would loop),
+      // so the first connection is the only time to ask.
       scopes_supported: [
         'programs:read',
         'profile:read',
         'reports:read',
         'reports:write',
         'triage:read',
+        'triage:write',
+        'grade:write',
         'profile:write',
         'disclosures:write',
       ],
@@ -172,7 +182,7 @@ describe('authentication', () => {
     expect(challenge).toMatch(/^Bearer /);
     expect(challenge).toContain(`resource_metadata="${PRM_URL}"`);
     expect(challenge).toContain(
-      'scope="programs:read profile:read reports:read reports:write triage:read profile:write disclosures:write"',
+      'scope="programs:read profile:read reports:read reports:write triage:read triage:write grade:write profile:write disclosures:write"',
     );
     expect(challenge).not.toContain('error='); // RFC 6750 §3.1: no error code without credentials
   });
@@ -561,6 +571,34 @@ describe('MCP over the hosted endpoint', () => {
     const client = await connect(current, await signer.sign({ scope: 'programs:read reports:write' }));
     try {
       expect((await client.listTools()).tools.map((t) => t.name)).not.toContain('submit_report');
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('reaches an organisation-side write with the scopes the first connection asks for', async () => {
+    // triage:write is never stepped up, so it must come from the first consent (HOSTED_INITIAL_SCOPES):
+    // a token carrying it gets the triage write all the way to the API, with its idempotency key.
+    current = setup();
+    const prompts: ElicitationPrompt[] = [];
+    const client = await connect(
+      current,
+      await signer.sign({ scope: 'profile:read triage:read triage:write' }),
+      'accept',
+      prompts,
+    );
+    try {
+      const result = await client.callTool({
+        name: 'add_triage_comment',
+        arguments: { reportId: 'r1', content: 'Reproduced on staging.', visibleToResearcher: false },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(prompts).toHaveLength(1);
+      const sent = current.apiCalls.map(
+        (c) => JSON.parse(c.body) as { query: string; variables?: Record<string, unknown> },
+      );
+      const write = sent.find((c) => c.query.includes('AddTriageComment'));
+      expect(write?.variables?.clientRequestId).toEqual(expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/));
     } finally {
       await client.close();
     }

@@ -74,18 +74,30 @@ export const READ_SCOPES: readonly Scope[] = SCOPES.filter((s) => !WRITE_SCOPES.
 export const DEFAULT_LOGIN_SCOPES: readonly Scope[] = [...READ_SCOPES, 'reports:write'];
 
 /**
- * What the hosted server asks for on first connection: the login defaults plus
- * the researcher-only writes. The authorization server silently drops those
- * for an account that is not a researcher, so asking costs nothing, and a
- * researcher gets them without a second trip to the consent screen.
+ * What the hosted server asks for on first connection (`scopes_supported`, and
+ * the 401 challenge): the login defaults plus every scope only some accounts
+ * can hold, the researcher-only writes and the organisation-side writes. The
+ * consent screen lists a scope the account cannot hold as unavailable without
+ * failing, and grants the rest, so asking costs an ineligible account nothing,
+ * and an eligible one gets its scopes without a second trip to the consent
+ * screen. These are the scopes that are never stepped up (`NO_STEP_UP_SCOPES`),
+ * so the first connection is the only time to ask for them: left out here, the
+ * organisation-side write tools would be unreachable over the hosted transport.
  */
-export const HOSTED_INITIAL_SCOPES: readonly Scope[] = [...DEFAULT_LOGIN_SCOPES, ...RESEARCHER_ONLY_SCOPES];
+export const HOSTED_INITIAL_SCOPES: readonly Scope[] = [
+  ...DEFAULT_LOGIN_SCOPES,
+  ...RESEARCHER_ONLY_SCOPES,
+  'triage:write',
+  'grade:write',
+];
 
 /**
  * Scopes the hosted server never asks for by step-up: consent grants them only
  * to eligible accounts and silently drops them otherwise, so asking again
- * would send an ineligible user round the consent screen for ever. A call
- * missing one reaches the tool, whose error says who is eligible.
+ * would send an ineligible user round the consent screen for ever. They are
+ * requested on first connection instead (`HOSTED_INITIAL_SCOPES`). A call
+ * missing one reaches the tool, whose error says who is eligible and how to
+ * approve it on a fresh connection.
  */
 export const NO_STEP_UP_SCOPES: ReadonlySet<Scope> = new Set<Scope>([
   ...ORG_GATED_SCOPES,

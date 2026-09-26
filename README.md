@@ -127,12 +127,15 @@ permissions you approve**.
 Point your client at `https://bugsecure-mcp.senintel.sn/mcp`. It discovers the
 authorization server, opens the BugSecure consent screen, and lets you choose
 exactly which permissions to grant (you can untick any of them). The first
-connection asks for the read scopes, `reports:write`, and the researcher-only
-`profile:write` and `disclosures:write` (left out automatically if your account
-is not a researcher's). When you use a tool that needs more (for example marking
-notifications read), the server answers with an OAuth step-up challenge and your
-client asks you to approve the extra permission, keeping the ones you already
-granted.
+connection asks for the read scopes, `reports:write`, the researcher-only
+`profile:write` and `disclosures:write`, and the organization-side
+`triage:write` and `grade:write`; the consent screen lists the ones your
+account cannot hold as unavailable (an organization's scopes for a researcher,
+a researcher's for an organization member) and grants the rest. When you use a
+tool that needs `notifications:write`, the server answers with an OAuth step-up
+challenge and your client asks you to approve the extra permission, keeping the
+ones you already granted. A connection made before this version has to be
+disconnected and made again to be offered the organization-side writes.
 
 Your client must support MCP authorization with
 [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration)
@@ -384,9 +387,10 @@ and platform administration), and a test keeps it that way.
     `grade:write`, and the researcher-only `profile:write` and
     `disclosures:write`. The authorization server grants those only to eligible
     accounts, so asking again would loop; the tool explains who is eligible
-    instead. The researcher-only pair is requested on first connection, so a
-    researcher has them from the start; a connection made before this version
-    gets them by reconnecting.
+    instead. All four are requested on first connection, so an eligible account
+    has them from the start and an ineligible one sees them as unavailable; a
+    connection made before this version gets them by disconnecting (removing
+    the saved sign-in) and connecting again.
 - **Third-party content is data.** Text written by other people is wrapped in
   `<untrusted-content-NONCE source="…">` blocks whose random nonce changes with
   every response (so stored text cannot forge the closing tag), with look-alike
