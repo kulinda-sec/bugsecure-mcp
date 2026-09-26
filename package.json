@@ -1,6 +1,6 @@
 {
   "name": "@kulinda-sec/bugsecure-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Model Context Protocol server for the BugSecure bug bounty platform: browse programmes, work on your reports and triage — with OAuth 2.1, least-privilege scopes and prompt-injection-aware output.",
   "license": "Apache-2.0",
   "author": "KLDS",
