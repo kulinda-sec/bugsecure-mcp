@@ -194,16 +194,16 @@ type LeaderboardEntryModel {
 }
 
 type Mutation {
-  addReportComment(input: AddCommentInput!): ReportCommentModel!
-  adjudicateReport(input: AdjudicateReportInput!): PayoutCertificateModel
-  assignTriageAnalyst(reportId: ID!, triageUserId: ID!): ReportModel!
-  markAllNotificationsAsRead: Boolean!
-  markNotificationAsRead(id: ID!): Boolean!
-  raiseAppeal(input: RaiseAppealInput!): SeverityAppealModel!
-  saveReportDisclosure(input: SaveDisclosureInput!): DisclosureDraftStateModel
-  submitReport(input: SubmitReportInput!): ReportModel!
-  updateReportStatus(input: UpdateReportStatusInput!): ReportModel!
-  updateResearcherProfile(input: UpdateResearcherProfileInput!): ResearcherProfileModel!
+  addReportComment(clientRequestId: String, input: AddCommentInput!): ReportCommentModel!
+  adjudicateReport(clientRequestId: String, input: AdjudicateReportInput!): PayoutCertificateModel
+  assignTriageAnalyst(clientRequestId: String, reportId: ID!, triageUserId: ID!): ReportModel!
+  markAllNotificationsAsRead(clientRequestId: String): Boolean!
+  markNotificationAsRead(clientRequestId: String, id: ID!): Boolean!
+  raiseAppeal(clientRequestId: String, input: RaiseAppealInput!): SeverityAppealModel!
+  saveReportDisclosure(clientRequestId: String, input: SaveDisclosureInput!): DisclosureDraftStateModel
+  submitReport(clientRequestId: String, input: SubmitReportInput!): ReportModel!
+  updateReportStatus(clientRequestId: String, input: UpdateReportStatusInput!): ReportModel!
+  updateResearcherProfile(clientRequestId: String, input: UpdateResearcherProfileInput!): ResearcherProfileModel!
 }
 
 type NotificationModel {
@@ -225,11 +225,13 @@ enum NotificationType {
   KYC_STATUS_CHANGED
   LEVEL_UP
   NEW_REPORT_RECEIVED
+  ORGANIZATION_INVITATION
   PROGRAM_PUBLISHED
   REPORT_ADJUDICATED
   REPORT_STATUS_CHANGED
   SECURITY_ALERT
   SETTLEMENT_ATTESTED
+  SETTLEMENT_CONFIRMED
   SETTLEMENT_DISPUTED
   SUBSCRIPTION_ACTIVATED
   USER_PENDING_APPROVAL
@@ -412,7 +414,7 @@ type Query {
   reports(filters: ReportFilterInput, skip: Int! = 0, take: Int! = 20): [ReportModel!]!
   researcherActivity(months: Int! = 6, userId: ID!): [ResearcherActivityPoint!]!
   researcherPublicProfile(username: String!): PublicResearcherProfileModel
-  researcherStats(userId: ID!): ResearcherStatsModel!
+  researcherStats(userId: ID!): ResearcherStatsModel
   search(limit: Int! = 20, offset: Int! = 0, query: String!, types: [String!]): [SearchResultModel!]!
   severityDistribution(orgId: ID!): [SeverityDistribution!]!
   taxonomyProfile: TaxonomyProfileModel!
@@ -447,6 +449,7 @@ type ReportCommentModel {
 
 input ReportFilterInput {
   assignedTriageId: String
+  organizationId: String
   programId: String
   reporterId: String
   search: String
@@ -545,7 +548,7 @@ type ResearcherProfileModel {
 
 type ResearcherStatsModel {
   reportsBySeverity: JSON!
-  totalEarned: Int!
+  totalEarned: Int
   totalReports: Int!
   validatedReports: Int!
   validationRate: Float!
@@ -609,8 +612,8 @@ type StandingModel {
   longestOverdueDays: Int!
   oldestOverdueSince: DateTime
   submissionsSuspended: Boolean!
-  totalIssued: Int!
-  totalSettled: Int!
+  totalIssued: Int
+  totalSettled: Int
 }
 
 input SubmitReportInput {

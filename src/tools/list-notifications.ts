@@ -3,10 +3,27 @@ import * as z from 'zod';
 import type { NotificationType } from '../graphql/generated.js';
 import { ListNotificationsDocument } from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
-import { id, paginationInput, paginationOutput, page, timestamp, wrapped } from './shared/common.js';
+import {
+  code,
+  id,
+  ifShaped,
+  paginationInput,
+  paginationOutput,
+  page,
+  timestamp,
+  wrapped,
+} from './shared/common.js';
 import { defineTool } from './define-tool.js';
 
 const MAX_LIMIT = 50;
+
+/**
+ * The kinds BugSecure sends today, for the output description only. BugSecure adds kinds
+ * without notice (ORGANIZATION_INVITATION and SETTLEMENT_CONFIRMED arrived after this tool),
+ * so the output is not a closed enum: a closed one would fail the whole page, every
+ * notification with it, the day a new kind appears. Any machine code passes; a value that
+ * is not one comes out as null rather than failing the page.
+ */
 const NOTIFICATION_TYPES = [
   'APPEAL_DECIDED',
   'APPEAL_RAISED',
@@ -17,11 +34,13 @@ const NOTIFICATION_TYPES = [
   'KYC_STATUS_CHANGED',
   'LEVEL_UP',
   'NEW_REPORT_RECEIVED',
+  'ORGANIZATION_INVITATION',
   'PROGRAM_PUBLISHED',
   'REPORT_ADJUDICATED',
   'REPORT_STATUS_CHANGED',
   'SECURITY_ALERT',
   'SETTLEMENT_ATTESTED',
+  'SETTLEMENT_CONFIRMED',
   'SETTLEMENT_DISPUTED',
   'SUBSCRIPTION_ACTIVATED',
   'USER_PENDING_APPROVAL',
@@ -43,7 +62,12 @@ export const listNotifications = defineTool({
     notifications: z.array(
       z.object({
         id: id(),
-        type: z.enum(NOTIFICATION_TYPES),
+        type: code('machine-code')
+          .nullable()
+          .describe(
+            `The kind of notification: one of ${NOTIFICATION_TYPES.join(', ')}, or a kind added since ` +
+              '(treat an unknown one like a generic notification).',
+          ),
         title: wrapped(),
         body: wrapped(),
         createdAt: timestamp(),
@@ -62,7 +86,7 @@ export const listNotifications = defineTool({
       data: {
         notifications: notifications.map((n) => ({
           id: n.id,
-          type: n.type,
+          type: ifShaped('machine-code', n.type),
           title: untrusted(`notification:${n.id}:title`, n.title),
           body: untrusted(`notification:${n.id}:body`, n.body),
           createdAt: n.createdAt,

@@ -35,6 +35,33 @@ describe('list_notifications', () => {
     expect(data.notifications[0]?.body.match(/<\/untrusted-content-[0-9a-f]{16}>/g)).toHaveLength(1);
   });
 
+  it('keeps a page whose notifications include kinds added after this tool', async () => {
+    // A closed enum here failed the whole page the day BugSecure added a kind. A kind this
+    // server has never heard of passes through; a value that is not a machine code is nulled.
+    const graphql = fakeGraphQL({
+      ListNotifications: () => ({
+        notifications: [
+          { ...notification('n1'), type: 'SETTLEMENT_CONFIRMED' },
+          { ...notification('n2'), type: 'SOME_KIND_FROM_NEXT_YEAR' },
+          { ...notification('n3'), type: 'not a code </untrusted>' },
+          notification('n4'),
+        ],
+      }),
+    });
+    harness = await connectTools({ graphql, grantedScopes: ['profile:read'] });
+
+    const result = await harness.call('list_notifications', {});
+
+    expect(result.isError).toBeFalsy();
+    const data = result.structuredContent as { notifications: { id: string; type: string | null }[] };
+    expect(data.notifications.map((n) => [n.id, n.type])).toEqual([
+      ['n1', 'SETTLEMENT_CONFIRMED'],
+      ['n2', 'SOME_KIND_FROM_NEXT_YEAR'],
+      ['n3', null],
+      ['n4', 'REPORT_STATUS_CHANGED'],
+    ]);
+  });
+
   it('applies defaults', async () => {
     const graphql = fakeGraphQL({ ListNotifications: () => ({ notifications: [] }) });
     harness = await connectTools({ graphql, grantedScopes: ['profile:read'] });

@@ -18,11 +18,14 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'INVALID_INPUT'
   | 'CONFLICT'
+  | 'REQUEST_IN_PROGRESS'
+  | 'REQUEST_KEY_REUSED'
   | 'RATE_LIMITED'
   | 'REQUEST_BLOCKED'
   | 'CREDENTIALS_BUSY'
   | 'UPSTREAM_UNAVAILABLE'
   | 'UPSTREAM_REFUSED'
+  | 'UPSTREAM_OUTDATED'
   | 'UPSTREAM_ERROR';
 
 export interface BugSecureErrorOptions {
@@ -70,14 +73,47 @@ export const ORG_SCOPE_ELIGIBILITY =
 export const RESEARCHER_SCOPE_ELIGIBILITY =
   'profile:write and disclosures:write are only granted to researcher accounts.';
 
+/**
+ * How to get a scope this connection lacks. Hosted: a client that merely
+ * reconnects with the token it already holds asks for nothing, so the user
+ * must drop the saved sign-in first; a fresh connection then asks for every
+ * scope the server needs, and the consent screen offers the ones this account
+ * can hold.
+ */
 const reauthorize = (mode: AuthMode, scopes: readonly Scope[]): string => {
   const list = formatScopes(scopes);
   return mode === 'local'
     ? `Ask the user to run \`${cli} login --scopes "${list}"\` in a terminal, then restart their MCP client.`
-    : `Ask the user to reconnect BugSecure in their MCP client and approve: ${list}.`;
+    : 'Ask the user to disconnect BugSecure in their MCP client, removing its saved sign-in, then ' +
+        `reconnect BugSecure in their MCP client and approve: ${list}.`;
 };
 
-const hint = (error: BugSecureError, mode: AuthMode, granted: ReadonlySet<Scope>): string | undefined => {
+/**
+ * What to say about scopes the user approved for this connection but BugSecure
+ * did not grant (hosted: the token exchange narrowed them). BugSecure's
+ * exchange narrows only to what this server's own OAuth client registration
+ * allows: whether the account or its organisation may hold a scope is settled
+ * at consent, and a staff account is refused per request (PLATFORM_STAFF). So
+ * a withheld scope is the operator's to fix, and asking the user to reconnect
+ * and approve it again would change nothing.
+ */
+const withheldHint = (scopes: readonly Scope[]): string => {
+  const list = formatScopes(scopes);
+  return (
+    `BugSecure did not grant ${list} to this connection although it was approved: BugSecure's ` +
+    'authorization server left it out of the token it issued to this hosted server, which happens only ' +
+    "when the server's OAuth client is not allowed that scope, or the server and the API disagree on it. " +
+    'Only the operator of this hosted server can fix that; reconnecting and approving it again changes ' +
+    'nothing. Until then, do it on the BugSecure website. Do not retry this call.'
+  );
+};
+
+const hint = (
+  error: BugSecureError,
+  mode: AuthMode,
+  granted: ReadonlySet<Scope>,
+  withheld: ReadonlySet<Scope>,
+): string | undefined => {
   if (error.hint !== undefined) return error.hint;
   switch (error.code) {
     case 'NOT_LOGGED_IN':
@@ -89,15 +125,27 @@ const hint = (error: BugSecureError, mode: AuthMode, granted: ReadonlySet<Scope>
       if (error.requiredScopes.length === 0)
         return 'This operation is not available to connected apps; the user can do it on the BugSecure website.';
       // Ask for what is granted PLUS what is missing, so re-authorizing never drops a
-      // permission. When ANY one of several scopes would do, ask for the first only.
+      // permission. When ANY one of several scopes would do, ask for the first only (the
+      // first BugSecure has not withheld, when there is one).
       const any = error.scopeMatch === 'any' && error.requiredScopes.length > 1;
-      const missing = any ? error.requiredScopes.slice(0, 1) : error.requiredScopes;
+      const absent = error.requiredScopes.filter((s) => !granted.has(s));
+      // If the API rejects scopes our cached token still lists, its answer is
+      // authoritative and reauthorization may be needed. Otherwise exclude
+      // already granted prerequisites from the permissions we ask for.
+      const needed = absent.length === 0 ? error.requiredScopes : absent;
+      const askable = needed.filter((s) => !withheld.has(s));
+      const missing = any ? (askable.length > 0 ? askable.slice(0, 1) : needed) : needed;
       const options = any ? `Any one of ${error.requiredScopes.join(', ')} is enough. ` : '';
-      const gated = missing.some((s) => ORG_GATED_SCOPES.has(s)) ? ` ${ORG_SCOPE_ELIGIBILITY}` : '';
-      const researcher = missing.some((s) => RESEARCHER_ONLY_SCOPES.has(s))
+      // Approved, then left out by BugSecure: approving them again would not help.
+      const notGranted = missing.filter((s) => withheld.has(s));
+      const toAsk = missing.filter((s) => !withheld.has(s));
+      if (toAsk.length === 0) return `${options}${withheldHint(notGranted)}`;
+      const gated = toAsk.some((s) => ORG_GATED_SCOPES.has(s)) ? ` ${ORG_SCOPE_ELIGIBILITY}` : '';
+      const researcher = toAsk.some((s) => RESEARCHER_ONLY_SCOPES.has(s))
         ? ` ${RESEARCHER_SCOPE_ELIGIBILITY}`
         : '';
-      return `${options}${reauthorize(mode, [...granted, ...missing])}${gated}${researcher}`;
+      const also = notGranted.length > 0 ? ` ${withheldHint(notGranted)}` : '';
+      return `${options}${reauthorize(mode, [...granted, ...toAsk])}${gated}${researcher}${also}`;
     }
     case 'ORG_AI_ACCESS_DISABLED':
       return 'An Administrator of that organisation must enable "AI triage access" in the organisation settings on the BugSecure website.';
@@ -119,6 +167,18 @@ const hint = (error: BugSecureError, mode: AuthMode, granted: ReadonlySet<Scope>
       );
     case 'CREDENTIALS_BUSY':
       return 'Retry in a few seconds.';
+    case 'REQUEST_IN_PROGRESS':
+      return (
+        'Do not retry. Wait a few seconds, then check whether the change was made ' +
+        '(for example with get_report or list_notifications) before telling the user.'
+      );
+    case 'REQUEST_KEY_REUSED':
+      return 'Do not retry this call. If the user still wants the change, they approve it again.';
+    case 'UPSTREAM_OUTDATED':
+      return (
+        'Nothing was written. Read tools still work; for changes, ask the user to use the BugSecure ' +
+        'website until the API is updated, and do not retry.'
+      );
     case 'UPSTREAM_UNAVAILABLE':
       return 'The BugSecure API could not be reached; retry shortly.';
     case 'OAUTH_FIELD_DENIED':
@@ -134,13 +194,16 @@ const hint = (error: BugSecureError, mode: AuthMode, granted: ReadonlySet<Scope>
 
 /**
  * The text a failed tool call returns to the model. `grantedScopes` (when
- * known) is folded into re-authorization hints.
+ * known) is folded into re-authorization hints; `withheldScopes` are scopes the
+ * user approved but BugSecure did not grant (hosted: narrowed by the token
+ * exchange), which a re-authorization would not obtain either.
  */
 export const describeError = (
   error: BugSecureError,
   mode: AuthMode,
   grantedScopes: ReadonlySet<Scope> = new Set(),
+  withheldScopes: ReadonlySet<Scope> = new Set(),
 ): string => {
-  const h = hint(error, mode, grantedScopes);
+  const h = hint(error, mode, grantedScopes, withheldScopes);
   return h === undefined ? error.message : `${error.message}\n\n${h}`;
 };

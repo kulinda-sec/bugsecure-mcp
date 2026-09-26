@@ -16,6 +16,6 @@ export const serverInstructions = (options: { readOnly: boolean }): string => {
     '',
     'Organisations grade the reports submitted to their programmes; BugSecure is the neutral third party (it re-examines appealed grades and reviews Critical ones).',
     '',
-    'If a tool reports a missing permission, an expired session or a refusal, relay its instructions to the user rather than retrying.',
+    'If a tool reports a missing permission, an expired session or a refusal, relay its instructions to the user rather than retrying. If it says a change may already have been made, check with the read tool it names before asking the user to approve anything again.',
   ].join('\n');
 };

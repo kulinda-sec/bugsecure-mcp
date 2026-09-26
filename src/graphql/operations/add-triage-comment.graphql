@@ -1,6 +1,6 @@
 # Tool: add_triage_comment (triage:write)
-mutation AddTriageComment($input: AddCommentInput!) {
-  addReportComment(input: $input) {
+mutation AddTriageComment($input: AddCommentInput!, $clientRequestId: String!) {
+  addReportComment(input: $input, clientRequestId: $clientRequestId) {
     id
     reportId
     isInternal

@@ -1,6 +1,6 @@
 # Tool: raise_appeal (reports:write)
-mutation RaiseAppeal($input: RaiseAppealInput!) {
-  raiseAppeal(input: $input) {
+mutation RaiseAppeal($input: RaiseAppealInput!, $clientRequestId: String!) {
+  raiseAppeal(input: $input, clientRequestId: $clientRequestId) {
     id
     reportId
     adjudicationId

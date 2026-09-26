@@ -142,4 +142,17 @@ describe('get_my_profile', () => {
       },
     });
   });
+
+  it('answers stats: null when BugSecure returns no statistics', async () => {
+    const graphql = fakeGraphQL({
+      GetMyProfile: () => ({ me, myProfile, unreadNotificationCount: 0 }),
+      GetMyStats: () => ({ researcherStats: null, researcherActivity: [] }),
+    });
+    harness = await connectTools({ graphql, grantedScopes: ['profile:read'] });
+
+    const result = await harness.call('get_my_profile', { stats: true });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({ account: { id: 'u1' }, stats: null });
+  });
 });

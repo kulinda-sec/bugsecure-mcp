@@ -127,12 +127,15 @@ permissions you approve**.
 Point your client at `https://bugsecure-mcp.senintel.sn/mcp`. It discovers the
 authorization server, opens the BugSecure consent screen, and lets you choose
 exactly which permissions to grant (you can untick any of them). The first
-connection asks for the read scopes, `reports:write`, and the researcher-only
-`profile:write` and `disclosures:write` (left out automatically if your account
-is not a researcher's). When you use a tool that needs more (for example marking
-notifications read), the server answers with an OAuth step-up challenge and your
-client asks you to approve the extra permission, keeping the ones you already
-granted.
+connection asks for the read scopes, `reports:write`, the researcher-only
+`profile:write` and `disclosures:write`, and the organization-side
+`triage:write` and `grade:write`; the consent screen lists the ones your
+account cannot hold as unavailable (an organization's scopes for a researcher,
+a researcher's for an organization member) and grants the rest. When you use a
+tool that needs `notifications:write`, the server answers with an OAuth step-up
+challenge and your client asks you to approve the extra permission, keeping the
+ones you already granted. A connection made before this version has to be
+disconnected and made again to be offered the organization-side writes.
 
 Your client must support MCP authorization with
 [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration)
@@ -275,13 +278,27 @@ not sent, the dialog names what the ids refer to — the programme, the report's
 title, the researcher, the grade you appeal — as looked up read-only on
 BugSecure; if a lookup is not possible it says so and shows the id only.
 
+Each approved change carries the approval's single-use nonce as an idempotency
+key. If its answer is lost (a timeout, a dropped connection, a 5xx, an internal
+error), the server resends it once with that same key, which BugSecure answers
+with what the first request wrote rather than a second change; if the resend
+gets no confirmation either, the tool says the change may already have been
+made, to check before approving it again. A replayed approval is sent with the
+same key too, so it gets back what the first one did and makes no second
+change, for every write (see [SECURITY.md](SECURITY.md#requirements)). Write
+tools need a BugSecure API that stores idempotency keys on every write
+(September 2026); with an older API they report it and send nothing, and read
+tools keep working.
+
 An approval can carry at most 50,000 characters in total: more than that cannot
 be reviewed in a dialog, so such a report is refused before you are asked, and
 belongs on the website. Tool inputs refuse control characters other than tab
 and new line outright.
 
 This is fail-closed: a client that cannot show approval dialogs gets an error
-from every write tool, and read tools keep working. Support as of September 2026:
+from every write tool, and read tools keep working. Client support as last checked
+on **25 September 2026** (clients change quickly: check your client's current
+documentation if a row looks out of date):
 
 | Client                     | Approval dialogs (elicitation)                                                        | Writes with the local server | Writes with the hosted server                                                                                                                                                                                |
 | -------------------------- | ------------------------------------------------------------------------------------- | :--------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -339,8 +356,10 @@ and platform administration), and a test keeps it that way.
 - **You approve every write.** See [Write tools and approvals](#write-tools-and-approvals).
   The approval is bound to your identity, to the exact arguments (a SHA-256
   digest, HMAC-sealed in the request state) and to ten minutes, and can be used
-  once per server instance (see [Self-hosting](#self-hosting-the-remote-server)
-  for what that means with several instances).
+  once per server instance. Its single-use nonce is also sent to the API as the
+  write's idempotency key, so a replay that reaches another instance gets the
+  first result back instead of a second change, for every write (see
+  [SECURITY.md](SECURITY.md#requirements)).
 - **OAuth 2.1 in both modes.**
   - _Local:_ the CLI is a public OAuth client. Login uses the authorization code
     flow with PKCE (S256), a random `state` compared in constant time, and
@@ -354,6 +373,18 @@ and platform administration), and a test keeps it that way.
     the whole grant — cannot happen by accident. An access token the API
     rejects is refreshed and the call retried once. `logout` revokes the grant
     (RFC 7009).
+    A stale lock is never stolen from a process that is still alive or whose
+    liveness cannot be checked. A reused PID can keep an abandoned lock in
+    this state; the error names the file and PID and gives manual recovery
+    steps. If a process crashes while changing the lock itself, its short-lived
+    `credentials.lock.break` guard is left in place for safety. The error
+    gives its path: stop all bugsecure-mcp processes before removing that
+    guard, then restart the clients. Ordinary crashes during a refresh still
+    recover automatically once the credentials lock is stale and its owner
+    PID is gone. A failure to release the lock is logged without replacing
+    the operation's result or original error. A lock left behind remains
+    excluded while its owner process lives; subsequent attempts explain
+    recovery once it or its guard is stale.
   - _Hosted:_ the server is an OAuth 2.1 protected resource. It publishes RFC 9728
     metadata, answers `401` with `WWW-Authenticate: Bearer resource_metadata="…"`,
     and `403 insufficient_scope` for step-up. Inbound JWTs are verified locally
@@ -368,9 +399,10 @@ and platform administration), and a test keeps it that way.
     `grade:write`, and the researcher-only `profile:write` and
     `disclosures:write`. The authorization server grants those only to eligible
     accounts, so asking again would loop; the tool explains who is eligible
-    instead. The researcher-only pair is requested on first connection, so a
-    researcher has them from the start; a connection made before this version
-    gets them by reconnecting.
+    instead. All four are requested on first connection, so an eligible account
+    has them from the start and an ineligible one sees them as unavailable; a
+    connection made before this version gets them by disconnecting (removing
+    the saved sign-in) and connecting again.
 - **Third-party content is data.** Text written by other people is wrapped in
   `<untrusted-content-NONCE source="…">` blocks whose random nonce changes with
   every response (so stored text cannot forge the closing tag), with look-alike
@@ -444,14 +476,23 @@ resource and the confidential client. Approval prompts are sealed with the
 dedicated approval key (`openssl rand -base64 32`; the server refuses to start
 without one unless its resource is on localhost), so every instance behind a
 load balancer must share it; rotating it only invalidates approvals in flight.
-Each instance remembers used approvals for ten minutes: a replay of an approved
-call landing on another instance within that window is not detected by that
-memory. It still needs the same user, client and exact arguments; for
-`submit_report` the server also refuses a report whose exact title was filed on
-the same programme by the same user within those ten minutes (when it can read
-your reports), and the other writes are refused by the API when repeated
-(one grade per report, status moves that are already done) or are comments. See
-[SECURITY.md](SECURITY.md#known-limitations).
+Each instance remembers used approvals for ten minutes and refuses a second use.
+Instances do not share that memory; the API's key store covers what it
+misses: every approved write is sent with its approval's nonce as an idempotency
+key (`clientRequestId`), and the BugSecure API performs each write at most once
+per user, operation and key. A replayed approval that reaches another instance
+then gets back what the first write did, and no second report, comment or
+change is made. Write tools need a BugSecure API that stores idempotency keys
+on every write (September 2026): an older API refuses every write from this
+version, and the tools say so. See [SECURITY.md](SECURITY.md#requirements).
+
+The server does not rate limit requests before they are authenticated: every
+request with a bearer token has its JWT signature verified, and the JWKS
+refetch cooldown (in `jose`) only limits how often the signing keys are
+fetched, not how many tokens are checked. Tool calls are rate limited per user
+once authenticated. Put it behind a reverse proxy or WAF that rate limits per
+client IP (and caps connections), so unauthenticated traffic cannot spend its
+CPU on signature checks.
 
 ## Development
 

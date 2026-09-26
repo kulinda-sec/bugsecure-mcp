@@ -8,6 +8,7 @@ import {
 } from '../graphql/generated.js';
 import type { ApprovalPrompt } from './approval.js';
 import { id, idInput } from './shared/common.js';
+import { partRequestId } from './shared/request-id.js';
 import { defineTool, type ToolContext } from './define-tool.js';
 
 const MAX_IDS = 50;
@@ -76,21 +77,34 @@ export const markNotificationsRead = defineTool({
     ...(await describeTargets(input, context)),
     fields: [['Notifications', input.all ? 'all' : (input.ids ?? []).join('\n')]],
   }),
-  async handler(input, { graphql, signal, logger }) {
+  async handler(input, { graphql, signal, logger, clientRequestId }) {
     if (input.all) {
-      await graphql.request(MarkAllNotificationsReadDocument, {}, { signal });
+      await graphql.request(MarkAllNotificationsReadDocument, { clientRequestId }, { signal });
       logger.info('all notifications marked read');
       return { data: { all: true, markedIds: [] } };
     }
     const done: string[] = [];
-    for (const notificationId of input.ids ?? []) {
+    for (const [index, notificationId] of (input.ids ?? []).entries()) {
       try {
-        await graphql.request(MarkNotificationReadDocument, { id: notificationId }, { signal });
+        // One key per notification, derived from the approval's, so a replay sends each with the
+        // key of its first use (which the API answers from its record).
+        await graphql.request(
+          MarkNotificationReadDocument,
+          { id: notificationId, clientRequestId: partRequestId(clientRequestId, index) },
+          { signal },
+        );
       } catch (error) {
         if (!(error instanceof BugSecureError) || done.length === 0) throw error;
+        // Keep the error's own hint and scopes: an unknown outcome must still say to check first.
         throw new BugSecureError(
           error.code,
-          `Marked ${done.join(', ')} read, then BugSecure refused ${notificationId}; the rest were not sent.\n${error.message}`,
+          `Marked ${done.join(', ')} read, then ${notificationId} failed; the rest were not sent.\n${error.message}`,
+          {
+            requiredScopes: error.requiredScopes,
+            scopeMatch: error.scopeMatch,
+            ...(error.hint === undefined ? {} : { hint: error.hint }),
+            cause: error,
+          },
         );
       }
       done.push(notificationId);

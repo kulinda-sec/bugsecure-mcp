@@ -29,6 +29,9 @@
  *      in this process, and the response is `accept` with `approve: true`.
  *      Decline/cancel → an error result, nothing sent. Anything that does not
  *      verify → a fresh approval prompt; never a write.
+ *   4. The approved write is sent with the nonce as its idempotency key
+ *      (`clientRequestId`, see ./shared/request-id.ts), so the API runs it at
+ *      most once whichever instance receives the approval.
  *
  * This works the same over stateless Streamable HTTP and stdio, because
  * the 2026-07-28 revision carries the request inside the tool result instead
@@ -57,6 +60,7 @@ import { canonicalJson, randomToken, sha256Base64Url } from '../crypto.js';
 import type { Logger } from '../logger.js';
 import { ExpiringLru } from '../lru.js';
 import { revealForReview } from '../untrusted.js';
+import { CHECK_BEFORE_REAPPROVING } from './shared/request-id.js';
 
 /**
  * What the user is shown before a write. Values are shown verbatim, one
@@ -122,17 +126,21 @@ export const APPROVAL_SCHEMA: {
 };
 
 /**
- * Single-use memory for approval nonces, per process. Bounded: under a flood
- * of more than `max` approvals within the TTL the oldest are forgotten, which
- * only reopens replay of an already-approved, identical payload by the same
- * principal. Hosted deployments with several instances do not share it; the
- * principal binding and the ten-minute TTL still apply everywhere.
+ * Single-use memory for approval nonces, per process: a replayed approval is
+ * refused here before anything is sent. Bounded: under a flood of more than
+ * `max` approvals within the TTL the oldest are forgotten. Hosted deployments
+ * with several instances do not share it.
  *
- * Residual risk (SECURITY.md § Known limitations): an approved retry replayed
- * to ANOTHER instance within the TTL would run there. The API offers no
- * idempotency key; submit_report refuses an apparent repeat (same title,
- * programme and user within the TTL), and grades and status moves cannot
- * repeat at the API.
+ * What covers both gaps is the API: the nonce is also the write's idempotency
+ * key (./shared/request-id.ts), so a replay that gets past this memory
+ * (another instance, or an evicted nonce) gets back what the first request
+ * wrote instead of writing again. This memory saves the round trip, and keeps
+ * an approval from being used twice on one instance.
+ *
+ * A refused replay is not a failed write: the approved change went out the
+ * first time, and a client re-issuing a call whose response stream broke
+ * (spec 2026-07-28 changelog) carries the same state. The refusal says so and
+ * sends the model to a read tool, never to a new approval (a new key).
  */
 export class ApprovalReplayGuard {
   readonly #used: ExpiringLru<string, true>;
@@ -170,7 +178,8 @@ export interface ApprovalCall {
 }
 
 export type ApprovalOutcome =
-  | { readonly kind: 'approved' }
+  /** `clientRequestId`: the approval's nonce, the idempotency key of the write it approved. */
+  | { readonly kind: 'approved'; readonly clientRequestId: string }
   | { readonly kind: 'respond'; readonly result: CallToolResult | InputRequiredResult };
 
 /** Whether the client declared form-mode elicitation (an empty object means form, spec § Capabilities). */
@@ -307,11 +316,12 @@ export class ApprovalGate {
         if (!this.#options.replay.consume(state.n)) {
           logger.warn('approval replayed; refused');
           return refusal(
-            'Nothing was sent: this approval was already used. Ask the user before trying again.',
+            'This approval was already used: the change it approved was sent then, and this call sent ' +
+              `nothing. Do not retry it, and do not ask the user to approve it again yet: ${CHECK_BEFORE_REAPPROVING}`,
           );
         }
         logger.info('write approved by the user');
-        return { kind: 'approved' };
+        return { kind: 'approved', clientRequestId: state.n };
       } else {
         logger.info('write not approved by the user', { action: answer.action });
         return refusal(

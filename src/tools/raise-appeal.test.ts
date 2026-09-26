@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups } from '../../test/helpers/fake-graphql.js';
+import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
 
@@ -31,7 +31,10 @@ describe('raise_appeal', () => {
 
     expect(result.isError).toBeFalsy();
     expect(graphql.calls).toEqual([
-      { operation: 'RaiseAppeal', variables: { input: { adjudicationId: 'adj1', grounds } } },
+      {
+        operation: 'RaiseAppeal',
+        variables: { input: { adjudicationId: 'adj1', grounds }, clientRequestId: REQUEST_ID },
+      },
     ]);
     expect(result.structuredContent).toMatchObject({ appeal: { id: 'ap1', status: 'OPEN', reportId: 'r1' } });
   });

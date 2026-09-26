@@ -73,11 +73,14 @@ export const addTriageComment = defineTool({
     };
   },
   async handler(input, context) {
-    const { graphql, signal } = context;
+    const { graphql, signal, clientRequestId } = context;
     await notStaff(context);
     const { addReportComment } = await graphql.request(
       AddTriageCommentDocument,
-      { input: { reportId: input.reportId, content: input.content, isInternal: !input.visibleToResearcher } },
+      {
+        input: { reportId: input.reportId, content: input.content, isInternal: !input.visibleToResearcher },
+        clientRequestId,
+      },
       { signal },
     );
     return { data: { comment: toPostedComment(addReportComment) } };

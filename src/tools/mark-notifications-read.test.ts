@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups } from '../../test/helpers/fake-graphql.js';
+import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
 
@@ -37,10 +37,23 @@ describe('mark_notifications_read', () => {
     expect(message).toContain('── Notifications (5 characters, 2 lines)\n│ n1\n│ n9');
     expect(message).toContain('This cannot be undone');
     expect(withoutLookups(graphql.calls)).toEqual([
-      { operation: 'MarkNotificationRead', variables: { id: 'n1' } },
-      { operation: 'MarkNotificationRead', variables: { id: 'n9' } },
+      { operation: 'MarkNotificationRead', variables: { id: 'n1', clientRequestId: REQUEST_ID } },
+      { operation: 'MarkNotificationRead', variables: { id: 'n9', clientRequestId: REQUEST_ID } },
     ]);
     expect(result.structuredContent).toEqual({ all: false, markedIds: ['n1', 'n9'] });
+  });
+
+  it('gives each notification its own key, derived deterministically from the approval’s', async () => {
+    const graphql = fakeGraphQL({
+      ...lookups(),
+      MarkNotificationRead: () => ({ markNotificationAsRead: true }),
+    });
+    harness = await connectTools({ graphql, grantedScopes: [...WRITER] });
+    await harness.call('mark_notifications_read', { ids: ['n1', 'n2', 'n3'] });
+    const keys = withoutLookups(graphql.calls).map((c) => String(c.variables.clientRequestId));
+    const base = keys[0]?.replace(/-0$/, '') ?? '';
+    expect(base).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(keys).toEqual([`${base}-0`, `${base}-1`, `${base}-2`]);
   });
 
   it('marks all, showing how many are unread', async () => {
@@ -53,7 +66,9 @@ describe('mark_notifications_read', () => {
     const result = await harness.call('mark_notifications_read', { all: true });
 
     expect(harness.prompts[0]?.message).toContain('Unread now:\n│ 4');
-    expect(withoutLookups(graphql.calls)).toEqual([{ operation: 'MarkAllNotificationsRead', variables: {} }]);
+    expect(withoutLookups(graphql.calls)).toEqual([
+      { operation: 'MarkAllNotificationsRead', variables: { clientRequestId: REQUEST_ID } },
+    ]);
     expect(result.structuredContent).toEqual({ all: true, markedIds: [] });
   });
 
@@ -70,8 +85,26 @@ describe('mark_notifications_read', () => {
     const result = await harness.call('mark_notifications_read', { ids: ['n1', 'n2', 'n3'] });
 
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain('Marked n1 read, then BugSecure refused n2; the rest were not sent.');
+    expect(textOf(result)).toContain('Marked n1 read, then n2 failed; the rest were not sent.');
     expect(withoutLookups(graphql.calls).map((c) => c.variables.id)).toEqual(['n1', 'n2']);
+  });
+
+  it('keeps "check before approving again" when one part’s outcome is unknown', async () => {
+    const graphql = fakeGraphQL({
+      ...lookups(),
+      MarkNotificationRead: (v) => {
+        if (v.id === 'n2') throw new BugSecureError('UPSTREAM_UNAVAILABLE', 'The BugSecure API timed out.');
+        return { markNotificationAsRead: true };
+      },
+    });
+    harness = await connectTools({ graphql, grantedScopes: [...WRITER] });
+
+    const text = textOf(await harness.call('mark_notifications_read', { ids: ['n1', 'n2', 'n3'] }));
+
+    expect(text).toContain('Marked n1 read, then n2 failed');
+    expect(text).toContain('may already have been made');
+    // n2 was resent once, with its own key; n3 never sent.
+    expect(withoutLookups(graphql.calls).map((c) => c.variables.id)).toEqual(['n1', 'n2', 'n2']);
   });
 
   it('asks without naming them when it cannot read notifications, and sends nothing if declined', async () => {

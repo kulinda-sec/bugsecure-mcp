@@ -2,6 +2,7 @@ import { type Client, StreamableHTTPClientTransport } from '@modelcontextprotoco
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { fakeAuthorizationServer } from '../../test/helpers/fake-authorization-server.js';
+import { lookups } from '../../test/helpers/fake-graphql.js';
 import {
   type ApprovalAnswer,
   type ElicitationPrompt,
@@ -58,16 +59,22 @@ const setup = (env: Record<string, string> = {}, api?: ApiOverride): Setup => {
     const override = api?.(authorization);
     if (override) return override;
     const body = typeof init?.body === 'string' ? init.body : '';
-    const data = body.includes('AddReportComment')
-      ? {
-          addReportComment: {
-            id: 'c1',
-            reportId: 'r1',
-            isInternal: false,
-            createdAt: '2026-09-21T10:00:00Z',
-          },
-        }
-      : { programs: [] };
+    const { query, variables } = JSON.parse(body) as { query: string; variables?: Record<string, unknown> };
+    const operation = /\b(?:query|mutation)\s+(\w+)/.exec(query)?.[1] ?? '';
+    const org = lookups();
+    const data =
+      operation === 'AddReportComment' || operation === 'AddTriageComment'
+        ? {
+            addReportComment: {
+              id: 'c1',
+              reportId: 'r1',
+              isInternal: operation === 'AddTriageComment',
+              createdAt: '2026-09-21T10:00:00Z',
+            },
+          }
+        : operation in org
+          ? org[operation]?.(variables ?? {})
+          : { programs: [] };
     return new Response(JSON.stringify({ data }), { headers: { 'content-type': 'application/json' } });
   };
   const app = createHttpApp({
@@ -133,14 +140,17 @@ describe('protected resource metadata (RFC 9728)', () => {
     expect(await res.json()).toEqual({
       resource: TEST_RESOURCE,
       authorization_servers: [TEST_ISSUER],
-      // Minimal set for basic use (spec: Scope Selection Strategy), plus the
-      // researcher-only writes, which are never stepped up (they would loop).
+      // Minimal set for basic use (spec: Scope Selection Strategy), plus every
+      // scope only some accounts can hold: never stepped up (they would loop),
+      // so the first connection is the only time to ask.
       scopes_supported: [
         'programs:read',
         'profile:read',
         'reports:read',
         'reports:write',
         'triage:read',
+        'triage:write',
+        'grade:write',
         'profile:write',
         'disclosures:write',
       ],
@@ -172,7 +182,7 @@ describe('authentication', () => {
     expect(challenge).toMatch(/^Bearer /);
     expect(challenge).toContain(`resource_metadata="${PRM_URL}"`);
     expect(challenge).toContain(
-      'scope="programs:read profile:read reports:read reports:write triage:read profile:write disclosures:write"',
+      'scope="programs:read profile:read reports:read reports:write triage:read triage:write grade:write profile:write disclosures:write"',
     );
     expect(challenge).not.toContain('error='); // RFC 6750 §3.1: no error code without credentials
   });
@@ -566,6 +576,34 @@ describe('MCP over the hosted endpoint', () => {
     }
   });
 
+  it('reaches an organisation-side write with the scopes the first connection asks for', async () => {
+    // triage:write is never stepped up, so it must come from the first consent (HOSTED_INITIAL_SCOPES):
+    // a token carrying it gets the triage write all the way to the API, with its idempotency key.
+    current = setup();
+    const prompts: ElicitationPrompt[] = [];
+    const client = await connect(
+      current,
+      await signer.sign({ scope: 'profile:read triage:read triage:write' }),
+      'accept',
+      prompts,
+    );
+    try {
+      const result = await client.callTool({
+        name: 'add_triage_comment',
+        arguments: { reportId: 'r1', content: 'Reproduced on staging.', visibleToResearcher: false },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(prompts).toHaveLength(1);
+      const sent = current.apiCalls.map(
+        (c) => JSON.parse(c.body) as { query: string; variables?: Record<string, unknown> },
+      );
+      const write = sent.find((c) => c.query.includes('AddTriageComment'));
+      expect(write?.variables?.clientRequestId).toEqual(expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/));
+    } finally {
+      await client.close();
+    }
+  });
+
   it('asks the user before a write (elicitation over stateless HTTP), and writes only on approval', async () => {
     for (const approve of ['accept', 'decline'] as const) {
       current = setup();
@@ -585,6 +623,41 @@ describe('MCP over the hosted endpoint', () => {
       }
     }
     current = undefined;
+  });
+
+  it('gates tools on the scopes the exchange granted, not the inbound token’s', async () => {
+    current = setup();
+    // The authorization server narrows the exchange: reports:write is no longer available.
+    current.as.tokenResponses = [
+      {
+        status: 200,
+        body: { access_token: 'api-token', token_type: 'Bearer', expires_in: 600, scope: 'reports:read' },
+      },
+    ];
+    const prompts: ElicitationPrompt[] = [];
+    const client = await connect(
+      current,
+      await signer.sign({ scope: 'reports:read reports:write' }),
+      'accept',
+      prompts,
+    );
+    try {
+      const result = await client.callTool({
+        name: 'add_report_comment',
+        arguments: { reportId: 'r1', content: 'hi' },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain('needs the reports:write permission');
+      // Approved on the inbound token, withheld by the exchange: asking again would not help.
+      expect(JSON.stringify(result.content)).toContain('BugSecure did not grant reports:write');
+      expect(JSON.stringify(result.content)).not.toContain('and approve:');
+      // Refused up front: no approval asked, nothing sent to the API.
+      expect(prompts).toHaveLength(0);
+      expect(current.apiCalls).toHaveLength(0);
+      expect(current.as.tokenRequests).toHaveLength(1);
+    } finally {
+      await client.close();
+    }
   });
 
   it('refuses writes from a client that cannot show approval prompts', async () => {
@@ -644,6 +717,33 @@ describe('MCP over the hosted endpoint', () => {
       expect(JSON.stringify(second.content)).toContain('Too many BugSecure tool calls');
     } finally {
       await writer.close();
+    }
+  });
+
+  it('a refused call takes nothing from the budgets checked after the one that refused it', async () => {
+    // Per client 1, per user 2: a client hammering past its own budget must not use up the
+    // account's, which the user's other clients share.
+    current = setup({ BUGSECURE_RATE_LIMIT_PER_MINUTE: '1', BUGSECURE_RATE_LIMIT_BURST: '1' });
+    const noisy = await connect(current, await signer.sign({ scope: 'programs:read', client_id: 'noisy' }));
+    const quiet = await connect(current, await signer.sign({ scope: 'programs:read', client_id: 'quiet' }));
+    try {
+      expect((await noisy.callTool({ name: 'search_programs', arguments: {} })).isError).toBeFalsy();
+      for (let i = 0; i < 3; i++) {
+        const refused = await noisy.callTool({ name: 'search_programs', arguments: {} });
+        expect(JSON.stringify(refused.content)).toContain('from this connection');
+      }
+      expect((await quiet.callTool({ name: 'search_programs', arguments: {} })).isError).toBeFalsy();
+      // Now the account's budget (2) is spent, by the two calls that ran.
+      const third = await connect(current, await signer.sign({ scope: 'programs:read', client_id: 'third' }));
+      try {
+        const refused = await third.callTool({ name: 'search_programs', arguments: {} });
+        expect(JSON.stringify(refused.content)).toContain('for this account');
+      } finally {
+        await third.close();
+      }
+    } finally {
+      await noisy.close();
+      await quiet.close();
     }
   });
 

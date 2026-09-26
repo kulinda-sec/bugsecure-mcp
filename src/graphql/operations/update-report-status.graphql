@@ -1,6 +1,6 @@
 # Tool: update_report_status (triage:write)
-mutation UpdateReportStatus($input: UpdateReportStatusInput!) {
-  updateReportStatus(input: $input) {
+mutation UpdateReportStatus($input: UpdateReportStatusInput!, $clientRequestId: String!) {
+  updateReportStatus(input: $input, clientRequestId: $clientRequestId) {
     id
     status
     duplicateOfId

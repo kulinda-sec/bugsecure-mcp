@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups } from '../../test/helpers/fake-graphql.js';
+import {
+  fakeGraphQL,
+  idempotentWrite,
+  lookups,
+  withoutLookups,
+  REQUEST_ID,
+} from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
 
@@ -26,7 +32,10 @@ describe('add_report_comment', () => {
     expect(graphql.calls).toEqual([
       {
         operation: 'AddReportComment',
-        variables: { input: { reportId: 'r1', content: 'Here is the account.', isInternal: false } },
+        variables: {
+          input: { reportId: 'r1', content: 'Here is the account.', isInternal: false },
+          clientRequestId: REQUEST_ID,
+        },
       },
     ]);
     expect(result.structuredContent).toEqual({
@@ -100,5 +109,37 @@ describe('add_report_comment', () => {
     const result = await harness.call('add_report_comment', { reportId: 'r1', content: 'hi' });
     expect(result.isError).toBe(true);
     expect(graphql.calls).toEqual([]);
+  });
+
+  it('resends a comment whose answer was lost after BugSecure posted it, with the same key: one comment', async () => {
+    const write = idempotentWrite(() => ({ addReportComment: posted }), { drop: 1 });
+    const graphql = fakeGraphQL({ AddReportComment: write });
+    harness = await connectTools({ graphql, grantedScopes: ['reports:write'] });
+
+    const result = await harness.call('add_report_comment', { reportId: 'r1', content: 'Hello' });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({ comment: { id: 'c9' } });
+    expect(harness.prompts).toHaveLength(1);
+    const keys = graphql.calls.map((c) => c.variables.clientRequestId);
+    expect(keys).toEqual([REQUEST_ID, keys[0]]);
+    expect(write.writes()).toBe(1);
+  });
+
+  it('says the comment may have been posted when the resend gets no answer either', async () => {
+    const write = idempotentWrite(() => ({ addReportComment: posted }), { drop: 2 });
+    const graphql = fakeGraphQL({ AddReportComment: write });
+    harness = await connectTools({ graphql, grantedScopes: ['reports:write'] });
+
+    const result = await harness.call('add_report_comment', { reportId: 'r1', content: 'Hello' });
+
+    expect(result.isError).toBe(true);
+    const text = textOf(result);
+    expect(text).toContain('may already have been made');
+    expect(text).toContain('do not ask the user to approve it again');
+    expect(text).toContain('get_report');
+    expect(text).not.toContain('retry shortly');
+    expect(graphql.calls).toHaveLength(2);
+    expect(write.writes()).toBe(1);
   });
 });

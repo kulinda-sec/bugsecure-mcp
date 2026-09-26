@@ -48,8 +48,15 @@ export const getOrgReportStats = defineTool({
       }),
     ),
     standing: z.object({
-      totalIssued: z.number().int().describe('Payout certificates issued.'),
-      totalSettled: z.number().int().describe('Certificates the researcher confirmed as paid.'),
+      // BugSecure withholds both totals from callers who are neither members of the organisation
+      // nor staff. A member always gets numbers, but the API types them as nullable, so null is
+      // relayed as "not shown" rather than failing the whole answer.
+      totalIssued: z.number().int().nullable().describe('Payout certificates issued (null when not shown).'),
+      totalSettled: z
+        .number()
+        .int()
+        .nullable()
+        .describe('Certificates the researcher confirmed as paid (null when not shown).'),
       currentlyOverdue: z.number().int(),
       longestOverdueDays: z.number().int(),
       oldestOverdueSince: timestamp().nullable(),

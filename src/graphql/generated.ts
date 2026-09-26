@@ -101,11 +101,13 @@ export type NotificationType =
   | 'KYC_STATUS_CHANGED'
   | 'LEVEL_UP'
   | 'NEW_REPORT_RECEIVED'
+  | 'ORGANIZATION_INVITATION'
   | 'PROGRAM_PUBLISHED'
   | 'REPORT_ADJUDICATED'
   | 'REPORT_STATUS_CHANGED'
   | 'SECURITY_ALERT'
   | 'SETTLEMENT_ATTESTED'
+  | 'SETTLEMENT_CONFIRMED'
   | 'SETTLEMENT_DISPUTED'
   | 'SUBSCRIPTION_ACTIVATED'
   | 'USER_PENDING_APPROVAL';
@@ -137,6 +139,7 @@ export type RaiseAppealInput = {
 
 export type ReportFilterInput = {
   readonly assignedTriageId?: string | null | undefined;
+  readonly organizationId?: string | null | undefined;
   readonly programId?: string | null | undefined;
   readonly reporterId?: string | null | undefined;
   readonly search?: string | null | undefined;
@@ -219,6 +222,7 @@ export type UserStatus =
 
 export type AddReportCommentMutationVariables = Exact<{
   input: AddCommentInput;
+  clientRequestId: string;
 }>;
 
 
@@ -226,6 +230,7 @@ export type AddReportCommentMutation = { readonly addReportComment: { readonly i
 
 export type AddTriageCommentMutationVariables = Exact<{
   input: AddCommentInput;
+  clientRequestId: string;
 }>;
 
 
@@ -234,6 +239,7 @@ export type AddTriageCommentMutation = { readonly addReportComment: { readonly i
 export type AssignReportMutationVariables = Exact<{
   reportId: string | number;
   triageUserId: string | number;
+  clientRequestId: string;
 }>;
 
 
@@ -295,7 +301,7 @@ export type GetMyStatsQueryVariables = Exact<{
 }>;
 
 
-export type GetMyStatsQuery = { readonly researcherStats: { readonly totalReports: number, readonly validatedReports: number, readonly validationRate: number, readonly totalEarned: number, readonly reportsBySeverity: unknown }, readonly researcherActivity: ReadonlyArray<{ readonly date: string, readonly submissions: number, readonly validated: number }> };
+export type GetMyStatsQuery = { readonly researcherStats: { readonly totalReports: number, readonly validatedReports: number, readonly validationRate: number, readonly totalEarned: number | null, readonly reportsBySeverity: unknown } | null, readonly researcherActivity: ReadonlyArray<{ readonly date: string, readonly submissions: number, readonly validated: number }> };
 
 export type GetOrgReportStatsQueryVariables = Exact<{
   orgId: string | number;
@@ -303,7 +309,7 @@ export type GetOrgReportStatsQueryVariables = Exact<{
 }>;
 
 
-export type GetOrgReportStatsQuery = { readonly reportTrends: ReadonlyArray<{ readonly date: string, readonly status: string | null, readonly count: number }>, readonly severityDistribution: ReadonlyArray<{ readonly severity: string, readonly count: number }>, readonly organizationStanding: { readonly totalIssued: number, readonly totalSettled: number, readonly currentlyOverdue: number, readonly longestOverdueDays: number, readonly oldestOverdueSince: string | null, readonly submissionsSuspended: boolean }, readonly payoutSummary: ReadonlyArray<{ readonly month: string, readonly count: number, readonly totalPaid: number, readonly avgBounty: number }> };
+export type GetOrgReportStatsQuery = { readonly reportTrends: ReadonlyArray<{ readonly date: string, readonly status: string | null, readonly count: number }>, readonly severityDistribution: ReadonlyArray<{ readonly severity: string, readonly count: number }>, readonly organizationStanding: { readonly totalIssued: number | null, readonly totalSettled: number | null, readonly currentlyOverdue: number, readonly longestOverdueDays: number, readonly oldestOverdueSince: string | null, readonly submissionsSuspended: boolean }, readonly payoutSummary: ReadonlyArray<{ readonly month: string, readonly count: number, readonly totalPaid: number, readonly avgBounty: number }> };
 
 export type GetOrgReportQueryVariables = Exact<{
   id: string | number;
@@ -383,6 +389,7 @@ export type GetTaxonomyQuery = { readonly taxonomyProfile: { readonly taxonomyId
 
 export type GradeReportMutationVariables = Exact<{
   input: AdjudicateReportInput;
+  clientRequestId: string;
 }>;
 
 
@@ -487,18 +494,22 @@ export type GetMyProfileRefQuery = { readonly me: { readonly id: string, readonl
 
 export type MarkNotificationReadMutationVariables = Exact<{
   id: string | number;
+  clientRequestId: string;
 }>;
 
 
 export type MarkNotificationReadMutation = { readonly markNotificationAsRead: boolean };
 
-export type MarkAllNotificationsReadMutationVariables = Exact<{ [key: string]: never; }>;
+export type MarkAllNotificationsReadMutationVariables = Exact<{
+  clientRequestId: string;
+}>;
 
 
 export type MarkAllNotificationsReadMutation = { readonly markAllNotificationsAsRead: boolean };
 
 export type RaiseAppealMutationVariables = Exact<{
   input: RaiseAppealInput;
+  clientRequestId: string;
 }>;
 
 
@@ -506,6 +517,7 @@ export type RaiseAppealMutation = { readonly raiseAppeal: { readonly id: string,
 
 export type SaveDisclosureDraftMutationVariables = Exact<{
   input: SaveDisclosureInput;
+  clientRequestId: string;
 }>;
 
 
@@ -540,6 +552,7 @@ export type SearchQuery = { readonly search: ReadonlyArray<{ readonly type: stri
 
 export type SubmitReportMutationVariables = Exact<{
   input: SubmitReportInput;
+  clientRequestId: string;
 }>;
 
 
@@ -547,6 +560,7 @@ export type SubmitReportMutation = { readonly submitReport: { readonly id: strin
 
 export type UpdateMyProfileMutationVariables = Exact<{
   input: UpdateResearcherProfileInput;
+  clientRequestId: string;
 }>;
 
 
@@ -554,6 +568,7 @@ export type UpdateMyProfileMutation = { readonly updateResearcherProfile: { read
 
 export type UpdateReportStatusMutationVariables = Exact<{
   input: UpdateReportStatusInput;
+  clientRequestId: string;
 }>;
 
 
@@ -818,8 +833,8 @@ export const AppealFieldsFragmentDoc = new TypedDocumentString(`
 }
     `, {"fragmentName":"AppealFields"}) as unknown as TypedDocumentString<AppealFieldsFragment, unknown>;
 export const AddReportCommentDocument = new TypedDocumentString(`
-    mutation AddReportComment($input: AddCommentInput!) {
-  addReportComment(input: $input) {
+    mutation AddReportComment($input: AddCommentInput!, $clientRequestId: String!) {
+  addReportComment(input: $input, clientRequestId: $clientRequestId) {
     id
     reportId
     isInternal
@@ -828,8 +843,8 @@ export const AddReportCommentDocument = new TypedDocumentString(`
 }
     `) as unknown as TypedDocumentString<AddReportCommentMutation, AddReportCommentMutationVariables>;
 export const AddTriageCommentDocument = new TypedDocumentString(`
-    mutation AddTriageComment($input: AddCommentInput!) {
-  addReportComment(input: $input) {
+    mutation AddTriageComment($input: AddCommentInput!, $clientRequestId: String!) {
+  addReportComment(input: $input, clientRequestId: $clientRequestId) {
     id
     reportId
     isInternal
@@ -838,8 +853,12 @@ export const AddTriageCommentDocument = new TypedDocumentString(`
 }
     `) as unknown as TypedDocumentString<AddTriageCommentMutation, AddTriageCommentMutationVariables>;
 export const AssignReportDocument = new TypedDocumentString(`
-    mutation AssignReport($reportId: ID!, $triageUserId: ID!) {
-  assignTriageAnalyst(reportId: $reportId, triageUserId: $triageUserId) {
+    mutation AssignReport($reportId: ID!, $triageUserId: ID!, $clientRequestId: String!) {
+  assignTriageAnalyst(
+    reportId: $reportId
+    triageUserId: $triageUserId
+    clientRequestId: $clientRequestId
+  ) {
     id
     assignedTriage {
       id
@@ -1385,8 +1404,8 @@ export const GetTaxonomyDocument = new TypedDocumentString(`
 }
     `) as unknown as TypedDocumentString<GetTaxonomyQuery, GetTaxonomyQueryVariables>;
 export const GradeReportDocument = new TypedDocumentString(`
-    mutation GradeReport($input: AdjudicateReportInput!) {
-  adjudicateReport(input: $input) {
+    mutation GradeReport($input: AdjudicateReportInput!, $clientRequestId: String!) {
+  adjudicateReport(input: $input, clientRequestId: $clientRequestId) {
     id
     reference
     reportId
@@ -1679,18 +1698,18 @@ export const GetMyProfileRefDocument = new TypedDocumentString(`
 }
     `) as unknown as TypedDocumentString<GetMyProfileRefQuery, GetMyProfileRefQueryVariables>;
 export const MarkNotificationReadDocument = new TypedDocumentString(`
-    mutation MarkNotificationRead($id: ID!) {
-  markNotificationAsRead(id: $id)
+    mutation MarkNotificationRead($id: ID!, $clientRequestId: String!) {
+  markNotificationAsRead(id: $id, clientRequestId: $clientRequestId)
 }
     `) as unknown as TypedDocumentString<MarkNotificationReadMutation, MarkNotificationReadMutationVariables>;
 export const MarkAllNotificationsReadDocument = new TypedDocumentString(`
-    mutation MarkAllNotificationsRead {
-  markAllNotificationsAsRead
+    mutation MarkAllNotificationsRead($clientRequestId: String!) {
+  markAllNotificationsAsRead(clientRequestId: $clientRequestId)
 }
     `) as unknown as TypedDocumentString<MarkAllNotificationsReadMutation, MarkAllNotificationsReadMutationVariables>;
 export const RaiseAppealDocument = new TypedDocumentString(`
-    mutation RaiseAppeal($input: RaiseAppealInput!) {
-  raiseAppeal(input: $input) {
+    mutation RaiseAppeal($input: RaiseAppealInput!, $clientRequestId: String!) {
+  raiseAppeal(input: $input, clientRequestId: $clientRequestId) {
     id
     reportId
     adjudicationId
@@ -1700,8 +1719,8 @@ export const RaiseAppealDocument = new TypedDocumentString(`
 }
     `) as unknown as TypedDocumentString<RaiseAppealMutation, RaiseAppealMutationVariables>;
 export const SaveDisclosureDraftDocument = new TypedDocumentString(`
-    mutation SaveDisclosureDraft($input: SaveDisclosureInput!) {
-  saveReportDisclosure(input: $input) {
+    mutation SaveDisclosureDraft($input: SaveDisclosureInput!, $clientRequestId: String!) {
+  saveReportDisclosure(input: $input, clientRequestId: $clientRequestId) {
     ...DisclosureDraftFields
   }
 }
@@ -1777,8 +1796,8 @@ export const SearchDocument = new TypedDocumentString(`
 }
     `) as unknown as TypedDocumentString<SearchQuery, SearchQueryVariables>;
 export const SubmitReportDocument = new TypedDocumentString(`
-    mutation SubmitReport($input: SubmitReportInput!) {
-  submitReport(input: $input) {
+    mutation SubmitReport($input: SubmitReportInput!, $clientRequestId: String!) {
+  submitReport(input: $input, clientRequestId: $clientRequestId) {
     id
     title
     status
@@ -1794,8 +1813,8 @@ export const SubmitReportDocument = new TypedDocumentString(`
 }
     `) as unknown as TypedDocumentString<SubmitReportMutation, SubmitReportMutationVariables>;
 export const UpdateMyProfileDocument = new TypedDocumentString(`
-    mutation UpdateMyProfile($input: UpdateResearcherProfileInput!) {
-  updateResearcherProfile(input: $input) {
+    mutation UpdateMyProfile($input: UpdateResearcherProfileInput!, $clientRequestId: String!) {
+  updateResearcherProfile(input: $input, clientRequestId: $clientRequestId) {
     bio
     website
     country
@@ -1803,8 +1822,8 @@ export const UpdateMyProfileDocument = new TypedDocumentString(`
 }
     `) as unknown as TypedDocumentString<UpdateMyProfileMutation, UpdateMyProfileMutationVariables>;
 export const UpdateReportStatusDocument = new TypedDocumentString(`
-    mutation UpdateReportStatus($input: UpdateReportStatusInput!) {
-  updateReportStatus(input: $input) {
+    mutation UpdateReportStatus($input: UpdateReportStatusInput!, $clientRequestId: String!) {
+  updateReportStatus(input: $input, clientRequestId: $clientRequestId) {
     id
     status
     duplicateOfId

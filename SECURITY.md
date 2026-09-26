@@ -59,21 +59,54 @@ Generally out of scope:
 - findings requiring a compromised local machine or MCP client;
 - missing hardening without a demonstrable impact, and volumetric DoS.
 
+## Requirements
+
+Write tools need a **BugSecure API that stores idempotency keys on every write
+(September 2026)**: every mutation this server sends carries a
+`clientRequestId`. Against an older API those calls are refused before anything
+runs (the argument is unknown to it), the tool reports that the API does not
+accept idempotency keys yet, and nothing is written; read tools are unaffected.
+
+How the key closes approval replay across hosted instances: an approval is
+single use per server instance, for ten minutes, and instances do not share
+that memory. But the approval's single-use nonce, sealed in the request state
+with the tool name and a digest of the exact arguments, is also the write's
+idempotency key. The API performs each write at most once per user, operation
+and key: the same key with the same arguments gets back what the first request
+wrote, as it stands now, instead of writing again; the same key with other
+arguments is refused (`IDEMPOTENCY_KEY_REUSED`), and a duplicate that arrives
+while the first is still running is refused (`IDEMPOTENCY_KEY_IN_PROGRESS`). A
+captured approved retry replayed to another instance therefore makes no second
+change. This relies on the API remembering keys for at least the ten minutes an
+approval is valid (it keeps them for 24 hours). A write that sends several
+mutations (marking several notifications read) derives one key per mutation
+from the nonce, so a replay sends each of them with the key of its first use.
+A replayed approval that reaches the same instance is refused before anything
+is sent, and the refusal says the change was already sent and which read tool
+to check, since asking the user to approve again would be a new key.
+
+A write whose answer is lost (a timeout, a dropped connection, a 5xx, or an
+internal error after the API may have committed) is resent **once**, with the
+same key: the API reserves the key as the first statement of the write's own
+transaction, so either it committed and answers the resend with what it wrote,
+or it rolled back with the key and the resend is the first attempt that
+counts. While the API reports the first request still running, that resend
+waits briefly and asks again. If the resend gets no confirmation either, the
+tool does not report a plain failure: it says the change may already have been
+made and must be checked with a read tool before the user is asked to approve
+it again, since a new approval is a new key. Any refusal of the resend is
+treated the same way: authentication, authorization, terms, validation and rate
+limits can refuse it before the key lookup, and reading a committed result can
+also fail. During a deploy or rollback, an older API instance can refuse the
+resend's idempotency key after a newer instance committed the first request.
+The tool shows why the resend failed while keeping the instruction to check
+the first request's outcome before retrying or approving again.
+
 ## Known limitations
 
 Documented trade-offs, so they are not reported as new findings (better
 mitigations are welcome):
 
-- **Approval replay across hosted instances.** An approval is single use per
-  server instance, for ten minutes; instances do not share that memory. A
-  captured approved retry (same user, same client, byte-identical arguments)
-  replayed to another instance within ten minutes would be executed there. The
-  BugSecure API has no idempotency key for these writes. Mitigations: the
-  replay needs the user's own access token; `submit_report` refuses a report
-  whose exact title was filed on the same programme by the same user in the
-  last ten minutes (when the connection holds `reports:read`); grading is one
-  grade per report and status moves cannot repeat, so those are refused by the
-  API; a replayed comment or appeal would be a duplicate the user can see.
 - **Certificate bytes are rebuilt.** The API returns a certificate's signed
   document as parsed JSON, not the exact bytes it signed, so
   `verify_certificate` re-serialises it with the same canonical JSON BugSecure

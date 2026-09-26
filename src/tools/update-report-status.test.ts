@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups } from '../../test/helpers/fake-graphql.js';
+import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
 
@@ -33,6 +33,7 @@ describe('update_report_status', () => {
       {
         operation: 'UpdateReportStatus',
         variables: {
+          clientRequestId: REQUEST_ID,
           input: {
             reportId: 'r1',
             status: 'NEEDS_MORE_INFO',
@@ -43,6 +44,27 @@ describe('update_report_status', () => {
       },
     ]);
     expect(result.structuredContent).toMatchObject({ report: { id: 'r1', status: 'NEEDS_MORE_INFO' } });
+  });
+
+  it('requires a reason of at least 20 characters for NOT_APPLICABLE and OUT_OF_SCOPE', async () => {
+    const graphql = fakeGraphQL({ ...lookups(), UpdateReportStatus: () => updated('NOT_APPLICABLE') });
+    harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
+
+    for (const status of ['NOT_APPLICABLE', 'OUT_OF_SCOPE']) {
+      expect((await harness.call('update_report_status', { reportId: 'r1', status })).isError).toBe(true);
+      expect(
+        (await harness.call('update_report_status', { reportId: 'r1', status, reason: '   too short   ' }))
+          .isError,
+      ).toBe(true);
+    }
+    expect(withoutLookups(graphql.calls)).toEqual([]);
+
+    const result = await harness.call('update_report_status', {
+      reportId: 'r1',
+      status: 'NOT_APPLICABLE',
+      reason: 'The endpoint named is not part of this programme.',
+    });
+    expect(result.isError).toBeFalsy();
   });
 
   it('requires duplicateOfId exactly when marking DUPLICATE', async () => {

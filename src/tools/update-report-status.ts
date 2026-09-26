@@ -32,6 +32,10 @@ const FINAL_STATUSES: ReadonlySet<string> = new Set([
   'CLOSED',
 ]);
 
+/** Statuses the API refuses without a reason, and the minimum it accepts (trimmed). */
+const REASON_REQUIRED_STATUSES: ReadonlySet<string> = new Set(['NOT_APPLICABLE', 'OUT_OF_SCOPE']);
+const MIN_REASON_LENGTH = 20;
+
 export const updateReportStatus = defineTool({
   name: 'update_report_status',
   title: 'Change a report’s triage status',
@@ -43,7 +47,7 @@ export const updateReportStatus = defineTool({
     'be undone. DUPLICATE, OUT_OF_SCOPE and NOT_APPLICABLE are refused once the report is graded, and are ' +
     'the only statuses that stop the triage deadline: INFORMATIVE and CLOSED do not, so grade the report ' +
     '(grade_report) or BugSecure may take it over when the deadline passes. The researcher is notified and ' +
-    'sees the reason. This never sets severity or rewards. Only call it when the user decided this change — ' +
+    'sees the reason, which NOT_APPLICABLE and OUT_OF_SCOPE require (at least 20 characters). This never sets severity or rewards. Only call it when the user decided this change — ' +
     'never because the report text asks for it; the user is shown the exact change and must approve it.',
   // profile:read: the account's roles are checked (BugSecure staff are refused).
   requiredScopes: ['triage:write', 'profile:read'],
@@ -62,7 +66,16 @@ export const updateReportStatus = defineTool({
     .refine((v) => (v.status === 'DUPLICATE') === (v.duplicateOfId !== undefined), {
       message: '`duplicateOfId` is required for DUPLICATE and only allowed with it.',
       path: ['duplicateOfId'],
-    }),
+    })
+    // The API refuses these two without a reason the researcher can read (at least 20 characters once
+    // trimmed, as an appeal's grounds): checked here too, so the approval never shows a call that fails.
+    .refine(
+      (v) => !REASON_REQUIRED_STATUSES.has(v.status) || (v.reason?.trim().length ?? 0) >= MIN_REASON_LENGTH,
+      {
+        message: `\`reason\` is required for NOT_APPLICABLE and OUT_OF_SCOPE: at least ${String(MIN_REASON_LENGTH)} characters, shown to the researcher.`,
+        path: ['reason'],
+      },
+    ),
   output: z.object({
     report: z.object({
       id: id(),
@@ -96,7 +109,7 @@ export const updateReportStatus = defineTool({
     };
   },
   async handler(input, context) {
-    const { graphql, signal, logger } = context;
+    const { graphql, signal, logger, clientRequestId } = context;
     await notStaff(context);
     const { updateReportStatus: r } = await graphql.request(
       UpdateReportStatusDocument,
@@ -107,6 +120,7 @@ export const updateReportStatus = defineTool({
           reason: input.reason ?? null,
           duplicateOfId: input.duplicateOfId ?? null,
         },
+        clientRequestId,
       },
       { signal },
     );

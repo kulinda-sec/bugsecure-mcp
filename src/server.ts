@@ -22,6 +22,8 @@ export interface BuildServerOptions {
   grantedScopes(): Promise<ReadonlySet<Scope> | undefined>;
   /** The signed-in user's id (the access token's `sub`), when known. */
   viewerId?(): Promise<string | undefined>;
+  /** Scopes the user approved, when BugSecure may grant fewer (hosted; see RegisterToolsOptions). */
+  approvedScopes?(): Promise<ReadonlySet<Scope> | undefined>;
   readonly readOnly: boolean;
   /** Approval prompts for write tools. */
   readonly approvals: ApprovalGate;
@@ -65,6 +67,7 @@ export const buildServer = (options: BuildServerOptions): McpServer => {
     graphql: options.graphql,
     grantedScopes: () => options.grantedScopes(),
     viewerId: () => options.viewerId?.() ?? Promise.resolve(undefined),
+    approvedScopes: () => options.approvedScopes?.() ?? Promise.resolve(undefined),
     // One per session: stdio builds one server per connection, hosted one per request.
     memo: new SessionMemo(),
     approvals: options.approvals,

@@ -68,14 +68,16 @@ export const getMyProfile = defineTool({
         totalReports: z.number().int(),
         validatedReports: z.number().int(),
         validationRate: z.number(),
-        totalEarned: z.number().int(),
+        // Null when the API withholds earnings from this caller (it shows them only to the researcher
+        // and to staff, so a signed-in researcher normally gets a number).
+        totalEarned: z.number().int().nullable(),
         reportsBySeverity: z.array(z.object({ severity: code('machine-code'), count: z.number().int() })),
         activity: z.array(
           z.object({ month: code('month'), submissions: z.number().int(), validated: z.number().int() }),
         ),
       })
       .nullable()
-      .describe('Only with stats: true.'),
+      .describe('Only with stats: true, and null when BugSecure returns no statistics.'),
   }),
   async handler(input, { graphql, signal }) {
     const { me, myProfile, unreadNotificationCount } = await graphql.request(
@@ -112,8 +114,11 @@ export const getMyProfile = defineTool({
           longestStreak: myProfile.longestStreak,
         },
         unreadNotifications: unreadNotificationCount,
+        // BugSecure answers null for statistics it does not show this caller. Its own
+        // statistics are always shown to the researcher, but null is relayed as "none" rather
+        // than failing the profile the stats were an add-on to.
         stats:
-          stats === undefined
+          stats?.researcherStats === undefined || stats.researcherStats === null
             ? null
             : {
                 totalReports: stats.researcherStats.totalReports,

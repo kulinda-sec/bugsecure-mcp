@@ -95,10 +95,10 @@ export const raiseAppeal = defineTool({
     };
   },
   // `reportId` is for the approval and the checks above; the API needs only the grade.
-  async handler(input, { graphql, signal }) {
+  async handler(input, { graphql, signal, clientRequestId }) {
     const { raiseAppeal: a } = await graphql.request(
       RaiseAppealDocument,
-      { input: { adjudicationId: input.adjudicationId, grounds: input.grounds } },
+      { input: { adjudicationId: input.adjudicationId, grounds: input.grounds }, clientRequestId },
       { signal },
     );
     return {

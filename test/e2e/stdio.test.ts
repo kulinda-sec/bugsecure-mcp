@@ -9,8 +9,10 @@
  *   without the capability → refused);
  * - a 2025-era client gets the same approval as a real elicitation/create.
  *
- * `pnpm run check` and CI build before testing. Without a build this suite
- * FAILS (it never silently skips): run `pnpm build` first.
+ * `pnpm run check` and CI build before testing. Without a build the suite is
+ * skipped with a notice (run `pnpm build` first), so a cold `pnpm test` does
+ * not fail on it — except in CI (`CI` set), where a missing build FAILS it:
+ * there it must never be skipped silently.
  */
 import { chmodSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -27,12 +29,20 @@ import { type ApprovalAnswer, type ElicitationPrompt, elicitingClient } from '..
 const CLI = join(import.meta.dirname, '..', '..', 'dist', 'cli.js');
 const TOKEN = 'e2e-access-token';
 
+const BUILT = existsSync(CLI);
+if (!BUILT && process.env.CI === undefined) {
+  process.stderr.write(
+    `\nSkipping the end-to-end suite: ${CLI} does not exist. Run \`pnpm build\` first.\n\n`,
+  );
+}
+
 interface ApiCall {
   readonly operation: string;
   readonly authorization: string | undefined;
+  readonly variables: Record<string, unknown> | undefined;
 }
 
-let api: Server;
+let api: Server | undefined;
 let apiUrl: string;
 const apiCalls: ApiCall[] = [];
 
@@ -43,9 +53,9 @@ const fakeApi = (): Server => {
     req.setEncoding('utf8');
     req.on('data', (chunk: string) => (raw += chunk));
     req.on('end', () => {
-      const body = JSON.parse(raw) as { query: string };
+      const body = JSON.parse(raw) as { query: string; variables?: Record<string, unknown> };
       const operation = /\b(?:query|mutation)\s+(\w+)/.exec(body.query)?.[1] ?? '?';
-      apiCalls.push({ operation, authorization: req.headers.authorization });
+      apiCalls.push({ operation, authorization: req.headers.authorization, variables: body.variables });
       const data =
         operation === 'AddReportComment'
           ? {
@@ -111,23 +121,29 @@ const spawnClient = async (
 };
 
 beforeAll(async () => {
-  if (!existsSync(CLI)) {
-    throw new Error(`${CLI} does not exist: run \`pnpm build\` before the end-to-end tests.`);
+  if (!BUILT) {
+    if (process.env.CI !== undefined)
+      throw new Error(`${CLI} does not exist: run \`pnpm build\` before the end-to-end tests.`);
+    return;
   }
-  api = fakeApi();
-  await new Promise<void>((resolve) => api.listen(0, '127.0.0.1', resolve));
-  apiUrl = `http://127.0.0.1:${String((api.address() as AddressInfo).port)}`;
+  const server = fakeApi();
+  api = server;
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  apiUrl = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
 });
 
 afterAll(async () => {
+  // Nothing to close when setup failed or the suite was skipped.
+  const server = api;
+  if (server === undefined) return;
   await new Promise<void>((resolve) => {
-    api.close(() => {
+    server.close(() => {
       resolve();
     });
   });
 });
 
-describe('bugsecure-mcp over stdio (built binary)', () => {
+describe.skipIf(!BUILT && process.env.CI === undefined)('bugsecure-mcp over stdio (built binary)', () => {
   it('serves a signed-out session on the 2026-07-28 protocol, explaining how to sign in', async () => {
     const client = await spawnClient(mkdtempSync(join(tmpdir(), 'bsmcp-e2e-')));
     try {
@@ -152,7 +168,9 @@ describe('bugsecure-mcp over stdio (built binary)', () => {
       const result = await client.callTool({ name: 'search_programs', arguments: {} });
       expect(result.isError).toBeFalsy();
       expect(result.structuredContent).toMatchObject({ programs: [], nextOffset: null });
-      expect(apiCalls).toEqual([{ operation: 'SearchPrograms', authorization: `Bearer ${TOKEN}` }]);
+      expect(apiCalls.map(({ operation, authorization }) => ({ operation, authorization }))).toEqual([
+        { operation: 'SearchPrograms', authorization: `Bearer ${TOKEN}` },
+      ]);
     } finally {
       await client.close();
     }
@@ -180,7 +198,10 @@ describe('bugsecure-mcp over stdio (built binary)', () => {
         arguments: { reportId: 'r1', content: 'Here is the test account: e2e@example.test' },
       });
 
-      expect(apiCalls.filter((c) => c.operation === 'AddReportComment')).toHaveLength(writes);
+      const sent = apiCalls.filter((c) => c.operation === 'AddReportComment');
+      expect(sent).toHaveLength(writes);
+      // The write carries its approval's idempotency key.
+      for (const call of sent) expect(call.variables?.clientRequestId).toMatch(/^[A-Za-z0-9_-]{16,128}$/);
       if (approve === 'none') {
         expect(prompts).toHaveLength(0);
         expect(JSON.stringify(result.content)).toContain('does not support approval prompts');

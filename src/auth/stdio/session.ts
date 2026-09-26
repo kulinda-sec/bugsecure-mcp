@@ -41,8 +41,10 @@ export const withCredentialsLock = async <T>(
     if (error instanceof LockTimeoutError) {
       throw new BugSecureError(
         'CREDENTIALS_BUSY',
-        'Another bugsecure-mcp process is updating the stored BugSecure login.',
-        { cause: error },
+        error.hint === undefined
+          ? 'Another bugsecure-mcp process is updating the stored BugSecure login.'
+          : error.message,
+        { cause: error, ...(error.hint === undefined ? {} : { hint: error.hint }) },
       );
     }
     throw error;
@@ -137,81 +139,86 @@ export class LocalSession implements AccessTokenProvider {
 
   async #refresh(): Promise<StoredCredentials> {
     const { store, issuer, logger } = this.#options;
-    return withCredentialsLock(this.#options.lockDir, async () => {
-      // Another process may have refreshed (or a new login completed) while we waited for the lock.
-      const loaded = await store.load(issuer);
-      if (!loaded) throw new BugSecureError('NOT_LOGGED_IN', 'bugsecure-mcp is not signed in to BugSecure.');
-      const stored = assertCredentialsFor(loaded, this.#options.resource);
-      if (this.#fresh(stored) && stored.accessToken !== this.#cached?.accessToken) {
-        this.#cached = stored;
-        return stored;
-      }
-      if (stored.refreshToken === undefined) {
-        throw new BugSecureError('SESSION_EXPIRED', 'The BugSecure session has expired.');
-      }
-
-      const issuedAt = this.#nowSeconds();
-      let tokens;
-      try {
-        tokens = await requestToken(
-          stored.tokenEndpoint,
-          {
-            grant_type: 'refresh_token',
-            refresh_token: stored.refreshToken,
-            client_id: stored.clientId,
-            resource: stored.resource,
-          },
-          this.#options.fetch === undefined ? {} : { fetch: this.#options.fetch },
-        );
-      } catch (error) {
-        if (
-          error instanceof OAuthRequestError &&
-          (error.error === 'invalid_grant' || error.error === 'invalid_scope')
-        ) {
-          // invalid_grant: revoked, expired, or reuse detected. invalid_scope: none of the
-          // granted permissions is still available to the account (e.g. its organisation
-          // turned AI triage access off, or it lost its seat). Either way the stored grant
-          // is dead: remove it rather than retry it on every call.
-          await store.delete(issuer);
-          this.#cached = undefined;
-          logger.warn('refresh token rejected; stored login removed', { error: error.error });
-          throw new BugSecureError(
-            'SESSION_EXPIRED',
-            error.error === 'invalid_scope'
-              ? 'The BugSecure session ended: the permissions it was granted are no longer available to this account.'
-              : 'The BugSecure session has expired or was revoked.',
-            {
-              cause: error,
-              ...(error.error === 'invalid_scope'
-                ? {
-                    hint:
-                      'Ask the user to sign in again (`login`), asking only for permissions their account can use: ' +
-                      'organisation-side permissions (triage:*, grade:write) need a seat in an organisation that ' +
-                      'still enables AI triage access / AI grading.',
-                  }
-                : {}),
-            },
-          );
+    return withCredentialsLock(
+      this.#options.lockDir,
+      async () => {
+        // Another process may have refreshed (or a new login completed) while we waited for the lock.
+        const loaded = await store.load(issuer);
+        if (!loaded)
+          throw new BugSecureError('NOT_LOGGED_IN', 'bugsecure-mcp is not signed in to BugSecure.');
+        const stored = assertCredentialsFor(loaded, this.#options.resource);
+        if (this.#fresh(stored) && stored.accessToken !== this.#cached?.accessToken) {
+          this.#cached = stored;
+          return stored;
         }
-        throw new BugSecureError('UPSTREAM_UNAVAILABLE', 'Could not refresh the BugSecure session.', {
-          cause: error,
-        });
-      }
+        if (stored.refreshToken === undefined) {
+          throw new BugSecureError('SESSION_EXPIRED', 'The BugSecure session has expired.');
+        }
 
-      const next: StoredCredentials = {
-        ...stored,
-        accessToken: tokens.access_token,
-        accessTokenExpiresAt: issuedAt + (tokens.expires_in ?? 300),
-        // Rotation: always keep the newest refresh token the AS gave us.
-        ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
-        scope: tokens.scope ?? stored.scope,
-        obtainedAt: issuedAt,
-      };
-      await store.save(next);
-      this.#cached = next;
-      logger.debug('access token refreshed');
-      return next;
-    });
+        const issuedAt = this.#nowSeconds();
+        let tokens;
+        try {
+          tokens = await requestToken(
+            stored.tokenEndpoint,
+            {
+              grant_type: 'refresh_token',
+              refresh_token: stored.refreshToken,
+              client_id: stored.clientId,
+              resource: stored.resource,
+            },
+            this.#options.fetch === undefined ? {} : { fetch: this.#options.fetch },
+          );
+        } catch (error) {
+          if (
+            error instanceof OAuthRequestError &&
+            (error.error === 'invalid_grant' || error.error === 'invalid_scope')
+          ) {
+            // invalid_grant: revoked, expired, or reuse detected. invalid_scope: none of the
+            // granted permissions is still available to the account (e.g. its organisation
+            // turned AI triage access off, or it lost its seat). Either way the stored grant
+            // is dead: remove it rather than retry it on every call.
+            await store.delete(issuer);
+            this.#cached = undefined;
+            logger.warn('refresh token rejected; stored login removed', { error: error.error });
+            throw new BugSecureError(
+              'SESSION_EXPIRED',
+              error.error === 'invalid_scope'
+                ? 'The BugSecure session ended: the permissions it was granted are no longer available to this account.'
+                : 'The BugSecure session has expired or was revoked.',
+              {
+                cause: error,
+                ...(error.error === 'invalid_scope'
+                  ? {
+                      hint:
+                        'Ask the user to sign in again (`login`), asking only for permissions their account can use: ' +
+                        'organisation-side permissions (triage:*, grade:write) need a seat in an organisation that ' +
+                        'still enables AI triage access / AI grading.',
+                    }
+                  : {}),
+              },
+            );
+          }
+          throw new BugSecureError('UPSTREAM_UNAVAILABLE', 'Could not refresh the BugSecure session.', {
+            cause: error,
+          });
+        }
+
+        const next: StoredCredentials = {
+          ...stored,
+          accessToken: tokens.access_token,
+          accessTokenExpiresAt: issuedAt + (tokens.expires_in ?? 300),
+          // Rotation: always keep the newest refresh token the AS gave us.
+          ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
+          scope: tokens.scope ?? stored.scope,
+          obtainedAt: issuedAt,
+        };
+        await store.save(next);
+        this.#cached = next;
+        logger.debug('access token refreshed');
+        return next;
+      },
+      { logger },
+    );
   }
 }
 
@@ -233,7 +240,7 @@ export const logout = async (options: {
   readonly logger: Logger;
   readonly fetch?: FetchFn;
 }): Promise<LogoutResult> => {
-  return withCredentialsLock(options.lockDir, () => logoutLocked(options));
+  return withCredentialsLock(options.lockDir, () => logoutLocked(options), { logger: options.logger });
 };
 
 const logoutLocked = async (options: {

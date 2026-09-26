@@ -47,6 +47,66 @@ describe('get_org_report_stats', () => {
     expect((result.structuredContent as { payouts: unknown[] }).payouts).toHaveLength(1);
   });
 
+  it('relays standing totals BugSecure withholds as null', async () => {
+    const graphql = fakeGraphQL({
+      GetOrgReportStats: () => ({
+        reportTrends: [],
+        severityDistribution: [],
+        organizationStanding: {
+          totalIssued: null,
+          totalSettled: null,
+          currentlyOverdue: 0,
+          longestOverdueDays: 0,
+          oldestOverdueSince: null,
+          submissionsSuspended: false,
+        },
+        payoutSummary: [],
+      }),
+    });
+    harness = await connectTools({ graphql, grantedScopes: ['triage:read'] });
+
+    const result = await harness.call('get_org_report_stats', { organizationId: 'org1' });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      standing: { totalIssued: null, totalSettled: null, currentlyOverdue: 0 },
+    });
+  });
+
+  it('does not ask to approve again a scope BugSecure withheld from an approved connection', async () => {
+    // Hosted: the user approved triage:read, the token exchange left it out (the hosted server's
+    // OAuth client registration does not allow it). Reconnecting would get the same answer.
+    const graphql = fakeGraphQL({});
+    harness = await connectTools({
+      graphql,
+      mode: 'hosted',
+      grantedScopes: ['programs:read'],
+      approvedScopes: ['programs:read', 'triage:read'],
+    });
+
+    const text = textOf(await harness.call('get_org_report_stats', { organizationId: 'org1' }));
+
+    expect(text).toContain('BugSecure did not grant triage:read to this connection although it was approved');
+    expect(text).toContain('Only the operator of this hosted server can fix that');
+    expect(text).not.toContain('AI triage access');
+    expect(text).not.toContain('reconnect BugSecure in their MCP client and approve');
+    expect(graphql.calls).toEqual([]);
+  });
+
+  it('still asks to approve a scope that was never requested', async () => {
+    harness = await connectTools({
+      graphql: fakeGraphQL({}),
+      mode: 'hosted',
+      grantedScopes: ['programs:read'],
+      approvedScopes: ['programs:read'],
+    });
+
+    const text = textOf(await harness.call('get_org_report_stats', { organizationId: 'org1' }));
+
+    expect(text).toContain('reconnect BugSecure in their MCP client and approve: programs:read triage:read');
+    expect(text).not.toContain('did not grant');
+  });
+
   it('rejects invalid arguments before calling the API', async () => {
     const graphql = fakeGraphQL({});
     harness = await connectTools({ graphql, grantedScopes: ['triage:read'] });

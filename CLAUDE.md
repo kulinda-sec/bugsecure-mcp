@@ -66,6 +66,13 @@ never npm or yarn.
   scope that also grants a read (`WRITE_SCOPES_WITH_READS`: `disclosures:write`
   reads the draft) for that read alone; every mutation a tool sends must be
   covered by its `requiredScopes` (`api-surface.test.ts`).
+- **Every write carries its idempotency key.** Each mutation document declares
+  `$clientRequestId: String!` and passes it; the handler sends
+  `context.clientRequestId` (the approval's nonce), or `partRequestId(…)` per
+  mutation when one call sends several (`src/tools/shared/request-id.ts`,
+  checked by `api-surface.test.ts`). The framework resends a mutation once,
+  with the same key, when its answer was lost (`src/tools/shared/write-retry.ts`);
+  never add a retry of your own, and keep a caught write error's `hint`.
 - **Know which side you act on.** One token can hold researcher and
   organisation scopes, and the API serves both sides through the same fields:
   researcher tools act only on the caller's own reports, organisation tools
