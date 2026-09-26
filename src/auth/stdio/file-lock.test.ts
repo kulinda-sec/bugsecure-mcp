@@ -1,7 +1,11 @@
 import {
+  type BigIntStats,
   chmodSync,
+  closeSync,
   existsSync,
+  fstatSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -18,6 +22,20 @@ import { describe, expect, it } from 'vitest';
 import { breakStaleLock, LockTimeoutError, sweepStaleAside, withFileLock } from './file-lock.js';
 
 const lockPath = (): string => join(mkdtempSync(join(tmpdir(), 'bsmcp-flock-')), 'x.lock');
+
+/**
+ * A lock file's identity (device, inode, mtime): what `breakStaleLock` compares.
+ * Read through a descriptor, so the stat is of the file that was opened, not
+ * of whatever the path names by the time of the next call.
+ */
+const identityOf = (path: string): BigIntStats => {
+  const fd = openSync(path, 'r');
+  try {
+    return fstatSync(fd, { bigint: true });
+  } finally {
+    closeSync(fd);
+  }
+};
 
 describe('withFileLock', () => {
   it('serialises critical sections', async () => {
@@ -85,7 +103,7 @@ describe('withFileLock', () => {
   it('deletes the stale lock it judged, and nothing else', async () => {
     const path = lockPath();
     writeFileSync(path, '99999:crashed\n');
-    const judged = statSync(path, { bigint: true });
+    const judged = identityOf(path);
     await expect(breakStaleLock(path, judged, 1_000)).resolves.toBe(true);
     expect(readdirSync(dirname(path))).toEqual([]);
     // Already broken by someone else: nothing to do but try to acquire.
@@ -95,16 +113,16 @@ describe('withFileLock', () => {
   it('leaves alone a live lock that replaced the stale one after it was judged', async () => {
     const path = lockPath();
     writeFileSync(path, '99999:crashed\n');
-    const judged = statSync(path, { bigint: true });
+    const judged = identityOf(path);
     // Meanwhile a faster waiter broke the stale lock and took the lock: a new file, a live owner.
     renameSync(path, `${path}.gone`);
     writeFileSync(path, 'live-owner\n');
-    const live = statSync(path, { bigint: true });
+    const live = identityOf(path);
 
     await expect(breakStaleLock(path, judged, 1_000)).resolves.toBe(false);
 
     expect(readFileSync(path, 'utf8')).toBe('live-owner\n');
-    const now = statSync(path, { bigint: true });
+    const now = identityOf(path);
     expect([now.ino, now.mtimeNs]).toEqual([live.ino, live.mtimeNs]); // the same file, untouched
     expect(readdirSync(dirname(path)).sort()).toEqual(['x.lock', 'x.lock.gone']);
   });
@@ -114,7 +132,7 @@ describe('withFileLock', () => {
     writeFileSync(path, 'slow-owner\n');
     const old = new Date(Date.now() - 60_000);
     utimesSync(path, old, old);
-    const judged = statSync(path, { bigint: true });
+    const judged = identityOf(path);
     const now = new Date();
     utimesSync(path, now, now); // the owner was alive after all
 
@@ -127,7 +145,7 @@ describe('withFileLock', () => {
   it('waits while another waiter is breaking the lock, and clears a breaker lock left by a crash', async () => {
     const path = lockPath();
     writeFileSync(path, '99999:crashed\n');
-    const judged = statSync(path, { bigint: true });
+    const judged = identityOf(path);
     writeFileSync(`${path}.break`, 'breaking\n');
 
     await expect(breakStaleLock(path, judged, 1_000)).resolves.toBe(false);
