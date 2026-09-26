@@ -22,12 +22,12 @@
  *
  * Only a mutation carrying a `clientRequestId` is resent (every mutation this
  * server sends does, see ./define-tool.ts); a query is never resent here. When
- * the resend fails the same way, or the API rate limits it (its limiter runs
- * before it looks the key up, so the first request may well have committed),
- * the outcome is unknown, and the error says so: the change may have been
+ * the resend fails, the outcome is unknown: authentication, authorization,
+ * validation and rate limits can refuse it before the key lookup, and even
+ * replaying a committed result can fail on its read path. The change may have been
  * made, and must be checked with a read tool before the user is asked to
- * approve it again (a new approval is a new key). Any other definite answer
- * to the resend (a refusal) stands.
+ * approve it again (a new approval is a new key). A refusal of the resend
+ * proves nothing about whether the first request committed.
  */
 import { BugSecureError } from '../../errors.js';
 import type { GraphQLClient, RequestOptions, TypedDocument } from '../../graphql/client.js';
@@ -82,10 +82,16 @@ const wait = (ms: number, signal: AbortSignal | undefined): Promise<void> => {
 
 /** The failure a write ends in when neither its request nor the resend confirmed it. */
 const outcomeUnknown = (cause: unknown): BugSecureError => {
+  // BugSecureError messages are safe to show (upstream text is already fenced).
+  // Raw errors may contain secrets. Keep the resend's hint out: advice to retry
+  // or approve again is unsafe until the first request's outcome is checked.
+  const detail = cause instanceof BugSecureError ? `The resend failed: ${cause.message}\n\n` : '';
   return new BugSecureError(
     'UPSTREAM_UNAVAILABLE',
-    'BugSecure did not confirm this change (the request was sent, then its answer was lost or was an ' +
-      'error on BugSecure’s side, and one resend with the same idempotency key got no confirmation either).',
+    detail +
+      'BugSecure did not confirm this change (the request was sent, then its answer was lost or was an ' +
+      'error on BugSecure’s side, and one resend with the same idempotency key got no confirmation either). ' +
+      'The first request may still have been made.',
     { hint: OUTCOME_UNKNOWN_HINT, cause },
   );
 };
@@ -124,11 +130,9 @@ export const resendingLostWrites = (graphql: GraphQLClient, options: WriteRetryO
             await wait(delay, signal);
             continue;
           }
-          // Still no answer, still running when we stopped asking, or rate limited before the
-          // API looked the key up: unknown.
-          if (isLost(error) || inProgress || code === 'RATE_LIMITED') throw outcomeUnknown(error);
-          // A definite answer (a refusal) stands: the API decided this key's request.
-          throw error;
+          // A refusal may precede the key lookup, or come from reading a committed
+          // result. Neither establishes that the first request did not commit.
+          throw outcomeUnknown(error);
         }
       }
     },

@@ -94,9 +94,13 @@ counts. While the API reports the first request still running, that resend
 waits briefly and asks again. If the resend gets no confirmation either, the
 tool does not report a plain failure: it says the change may already have been
 made and must be checked with a read tool before the user is asked to approve
-it again, since a new approval is a new key. A resend the API rate limits is
-treated the same way: its rate limiter runs before it looks the key up, so the
-first request may well have committed.
+it again, since a new approval is a new key. Any refusal of the resend is
+treated the same way: authentication, authorization, terms, validation and rate
+limits can refuse it before the key lookup, and reading a committed result can
+also fail. During a deploy or rollback, an older API instance can refuse the
+resend's idempotency key after a newer instance committed the first request.
+The tool shows why the resend failed while keeping the instruction to check
+the first request's outcome before retrying or approving again.
 
 ## Known limitations
 
