@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rename, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readdir, readFile, rename, utimes, writeFile } from 'node:fs/promises';
 import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -20,7 +20,10 @@ describe('lock recovery and acquisition', () => {
     await writeFile(path, 'legacy-owner\n');
     const old = new Date(Date.now() - 60_000);
     await utimes(path, old, old);
-    const judged = await stat(path, { bigint: true });
+    // Identity through a descriptor: the stat is of the file that was opened, not of the path later.
+    const handle = await open(path, 'r');
+    const judged = await handle.stat({ bigint: true });
+    await handle.close();
     const moved = Promise.withResolvers<undefined>();
     const resume = Promise.withResolvers<undefined>();
     const fs = await vi.importActual<typeof FsPromises>('node:fs/promises');
@@ -48,7 +51,7 @@ describe('lock recovery and acquisition', () => {
     try {
       await sleep(30);
       expect(entered).toBe(false);
-      await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readdir(dirname(path))).not.toContain('x.lock'); // moved aside, not yet restored
     } finally {
       resume.resolve(undefined);
     }
