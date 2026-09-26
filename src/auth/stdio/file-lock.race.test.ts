@@ -1,4 +1,4 @@
-import { mkdtemp, open, readdir, readFile, rename, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readdir, rename, utimes, writeFile } from 'node:fs/promises';
 import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -21,9 +21,9 @@ describe('lock recovery and acquisition', () => {
     const old = new Date(Date.now() - 60_000);
     await utimes(path, old, old);
     // Identity through a descriptor: the stat is of the file that was opened, not of the path later.
+    // The descriptor stays open to the end: what it reads then is this very inode, put back.
     const handle = await open(path, 'r');
     const judged = await handle.stat({ bigint: true });
-    await handle.close();
     const moved = Promise.withResolvers<undefined>();
     const resume = Promise.withResolvers<undefined>();
     const fs = await vi.importActual<typeof FsPromises>('node:fs/promises');
@@ -49,15 +49,22 @@ describe('lock recovery and acquisition', () => {
     );
     const refused = expect(contender).rejects.toBeInstanceOf(LockTimeoutError);
     try {
-      await sleep(30);
+      try {
+        await sleep(30);
+        expect(entered).toBe(false);
+        expect(await readdir(dirname(path))).not.toContain('x.lock'); // moved aside, not yet restored
+      } finally {
+        resume.resolve(undefined);
+      }
+      await expect(breaking).resolves.toBe(false);
+      await refused;
       expect(entered).toBe(false);
-      expect(await readdir(dirname(path))).not.toContain('x.lock'); // moved aside, not yet restored
+      // Restored under its name, and it is the same file: the descriptor opened before the
+      // move still reads the owner's token.
+      expect(await readdir(dirname(path))).toEqual(['x.lock']);
+      expect(await handle.readFile('utf8')).toBe('legacy-owner\n');
     } finally {
-      resume.resolve(undefined);
+      await handle.close();
     }
-    await expect(breaking).resolves.toBe(false);
-    await refused;
-    expect(entered).toBe(false);
-    expect(await readFile(path, 'utf8')).toBe('legacy-owner\n');
   });
 });
