@@ -171,6 +171,21 @@ describe('RFC 8693 token exchange', () => {
     expect(await ex.exchange(subject('jti-2'))).toBe('narrow');
   });
 
+  it('caches the scopes granted by the exchange with the token: narrowed, or else the requested ones', async () => {
+    const { ex, as } = exchanger();
+    as.tokenResponses = [
+      {
+        status: 200,
+        body: { access_token: 'narrow', token_type: 'Bearer', expires_in: 600, scope: 'programs:read' },
+      },
+      { status: 200, body: { access_token: 'same', token_type: 'Bearer', expires_in: 600 } },
+    ];
+    expect([...(await ex.grantedScopes(subject()))]).toEqual(['programs:read']);
+    expect(await ex.exchange(subject())).toBe('narrow');
+    expect(as.tokenRequests).toHaveLength(1); // one exchange serves both
+    expect([...(await ex.grantedScopes(subject('jti-2')))].sort()).toEqual(['programs:read', 'reports:read']);
+  });
+
   it.each([
     ['invalid_scope', 400, true],
     ['invalid_token', 400, true],

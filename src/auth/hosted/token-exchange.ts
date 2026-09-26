@@ -11,6 +11,17 @@
  * token (or the inbound one, whichever is sooner) expires, in a bounded LRU.
  * Concurrent requests for the same `jti` share one in-flight exchange.
  *
+ * The authorization server may narrow the scopes (RFC 8693 §2.2.1). BugSecure's
+ * narrows only to what this client's own registration allows, so a narrowing
+ * is an operator-side condition (the hosted client lacks a scope this server
+ * asks for, or the two disagree on one), never the user's or their
+ * organisation's eligibility, which is settled at consent. What the API will
+ * enforce is the EXCHANGED token's scopes, so those are cached with it and are
+ * what tools are gated on (`grantedScopes`): a tool the narrowing took away
+ * fails up front with INSUFFICIENT_SCOPE, not half-way at the API, and says
+ * BugSecure withheld the scope rather than asking the user to approve it again
+ * (errors.ts).
+ *
  * An inbound token the authorization server refuses to exchange (invalid_grant
  * / invalid_token: its grant was revoked, or it is signed with a key the AS no
  * longer has — which our JWKS cache can still trust for a while; invalid_scope:
@@ -23,7 +34,7 @@ import { BugSecureError } from '../../errors.js';
 import type { AccessTokenProvider } from '../../graphql/client.js';
 import type { FetchFn } from '../../http.js';
 import type { Logger } from '../../logger.js';
-import { formatScopes } from '../../scopes.js';
+import { formatScopes, parseScopeString, type Scope } from '../../scopes.js';
 import { OAuthRequestError, requestToken } from '../oauth.js';
 import type { VerifiedAccessToken } from './jwt.js';
 import { ExpiringLru } from '../../lru.js';
@@ -73,6 +84,13 @@ const refusedError = (cause?: unknown): BugSecureError => {
   );
 };
 
+/** An API access token obtained by exchange, and the scopes it actually carries. */
+export interface ExchangedToken {
+  readonly accessToken: string;
+  /** Granted by the exchange: the inbound token's, or fewer when the authorization server narrowed them. */
+  readonly scopes: ReadonlySet<Scope>;
+}
+
 /** Keyed by `jti`, scoped to the subject and client the AS bound it to. */
 const cacheKey = (subject: VerifiedAccessToken): string => {
   return `${subject.clientId}\u0000${subject.subject}\u0000${subject.jti}`;
@@ -80,9 +98,9 @@ const cacheKey = (subject: VerifiedAccessToken): string => {
 
 export class TokenExchanger {
   readonly #options: TokenExchangerOptions;
-  readonly #cache: ExpiringLru<string, string>;
+  readonly #cache: ExpiringLru<string, ExchangedToken>;
   readonly #refused: ExpiringLru<string, true>;
-  readonly #inflight = new Map<string, Promise<string>>();
+  readonly #inflight = new Map<string, Promise<ExchangedToken>>();
   readonly #now: () => number;
 
   constructor(options: TokenExchangerOptions) {
@@ -94,6 +112,19 @@ export class TokenExchanger {
 
   /** An API access token for the user behind `subject`. */
   async exchange(subject: VerifiedAccessToken, signal?: AbortSignal): Promise<string> {
+    return (await this.exchanged(subject, signal)).accessToken;
+  }
+
+  /**
+   * The scopes the API token for `subject` carries: what tool calls are gated
+   * on. Exchanges (or reuses the cached exchange) to find out.
+   */
+  async grantedScopes(subject: VerifiedAccessToken, signal?: AbortSignal): Promise<ReadonlySet<Scope>> {
+    return (await this.exchanged(subject, signal)).scopes;
+  }
+
+  /** The exchanged token for `subject`, with its scopes (cached; concurrent calls share one exchange). */
+  async exchanged(subject: VerifiedAccessToken, signal?: AbortSignal): Promise<ExchangedToken> {
     const key = cacheKey(subject);
     if (this.#refused.get(key) === true) throw refusedError();
     const cached = this.#cache.get(key);
@@ -118,7 +149,7 @@ export class TokenExchanger {
     return this.#refused.get(cacheKey(subject)) === true;
   }
 
-  async #doExchange(subject: VerifiedAccessToken, key: string): Promise<string> {
+  async #doExchange(subject: VerifiedAccessToken, key: string): Promise<ExchangedToken> {
     const { logger } = this.#options;
     const nowSeconds = Math.floor(this.#now() / 1000);
     // An inbound token carrying no scope this server knows cannot be exchanged
@@ -177,7 +208,8 @@ export class TokenExchanger {
       throw new BugSecureError('UPSTREAM_ERROR', 'The authorization server issued an unexpected token type.');
     }
     // RFC 8693 §2.2.1: `scope` is present when it differs from the request. It
-    // may narrow (a scope no longer available to the user), never widen.
+    // may narrow (this client's registration does not allow a scope), never widen.
+    let scopes = parseScopeString(requested);
     if (response.scope !== undefined) {
       const issued = response.scope.split(/\s+/).filter((s) => s !== '');
       const asked = new Set(requested.split(' '));
@@ -188,12 +220,20 @@ export class TokenExchanger {
           'The authorization server issued broader access than requested; refusing to use it.',
         );
       }
+      scopes = parseScopeString(response.scope);
+      if (scopes.size < asked.size) {
+        // Scope names are not secrets; the operator needs them to fix the client's registration.
+        logger.warn('token exchange narrowed the scopes: the hosted client is not allowed them', {
+          withheld: formatScopes([...subject.scopes].filter((s) => !scopes.has(s))),
+        });
+      }
     }
 
+    const exchanged: ExchangedToken = { accessToken: response.access_token, scopes };
     const exchangedExpiry = nowSeconds + (response.expires_in ?? 60);
     const usableUntil = Math.min(exchangedExpiry, subject.expiresAt) - EXPIRY_MARGIN_SECONDS;
-    this.#cache.set(key, response.access_token, usableUntil * 1000);
-    return response.access_token;
+    this.#cache.set(key, exchanged, usableUntil * 1000);
+    return exchanged;
   }
 }
 

@@ -29,7 +29,7 @@ import { BugSecureError } from '../errors.js';
 import { createGraphQLClient } from '../graphql/client.js';
 import { type FetchFn, readTextCapped, ResponseTooLargeError } from '../http.js';
 import type { Logger } from '../logger.js';
-import { RateLimiter } from '../rate-limit.js';
+import { type RateLimitDecision, RateLimiter } from '../rate-limit.js';
 import { HOSTED_INITIAL_SCOPES, NO_STEP_UP_SCOPES, type Scope } from '../scopes.js';
 import { ApprovalGate, ApprovalReplayGuard } from '../tools/approval.js';
 import { type AnyTool, isWriteTool } from '../tools/define-tool.js';
@@ -186,26 +186,36 @@ export const createHttpApp = (options: HttpAppOptions): HttpApp => {
         mode: 'hosted',
         graphql,
         logger: callerLogger,
-        grantedScopes: () => Promise.resolve(subject.scopes),
+        // What the API token actually carries: the exchange may narrow the inbound token's
+        // scopes, and a tool the narrowing took away must fail here, before any approval.
+        grantedScopes: () => options.exchanger.grantedScopes(subject),
+        // What the user approved: a scope here but not above was withheld by BugSecure, and
+        // a missing-permission error must not ask them to approve it again.
+        approvedScopes: () => Promise.resolve(subject.scopes),
         viewerId: () => Promise.resolve(subject.subject),
         readOnly: config.readOnly,
         approvals: new ApprovalGate({ key: approvalKey, principal, replay, logger: callerLogger }),
         rateLimit: (toolName) => {
           const user = JSON.stringify([subject.subject]);
-          const checks = [
-            { decision: perClient.take(principal), what: 'from this connection' },
-            { decision: perUser.take(user), what: 'for this account' },
+          // In order, stopping at the first refusal: a refused call takes nothing from the
+          // budgets after it (a client over its own budget must not drain the user's other
+          // clients' shared budget, nor the write budget, with calls that never run).
+          const checks: readonly (readonly [take: () => RateLimitDecision, what: string])[] = [
+            [() => perClient.take(principal), 'from this connection'],
+            [() => perUser.take(user), 'for this account'],
             ...(writeToolNames.has(toolName)
-              ? [{ decision: writes.take(user), what: 'that change data, for this account' }]
+              ? [[() => writes.take(user), 'that change data, for this account'] as const]
               : []),
           ];
-          const refused = checks.find((c) => !c.decision.allowed);
-          if (refused === undefined || refused.decision.allowed) return;
-          callerLogger.warn('tool call rate limited', { tool: toolName });
-          throw new BugSecureError(
-            'RATE_LIMITED',
-            `Too many BugSecure tool calls ${refused.what}. Try again in ${String(refused.decision.retryAfterSeconds)} seconds.`,
-          );
+          for (const [take, what] of checks) {
+            const decision = take();
+            if (decision.allowed) continue;
+            callerLogger.warn('tool call rate limited', { tool: toolName });
+            throw new BugSecureError(
+              'RATE_LIMITED',
+              `Too many BugSecure tool calls ${what}. Try again in ${String(decision.retryAfterSeconds)} seconds.`,
+            );
+          }
         },
         tools,
       });
