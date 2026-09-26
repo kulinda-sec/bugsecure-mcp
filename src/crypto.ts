@@ -38,6 +38,12 @@ export const createPkcePair = (): PkcePair => {
  * Deterministic JSON: object keys sorted at every level, `undefined` members
  * dropped. The same algorithm BugSecure uses for signed certificates, so the
  * output is byte-identical to what it signed.
+ *
+ * Keys are ordered by UTF-16 code units (`<`, like JavaScript's default
+ * `.sort()`), not by code points, ON PURPOSE: that is how the BugSecure API
+ * orders them when it signs, and the two differ for keys outside the Basic
+ * Multilingual Plane. Change this order only together with the API's, or
+ * genuine certificates stop verifying.
  */
 export const canonicalJson = (value: unknown): string => {
   if (value === null || typeof value !== 'object') {

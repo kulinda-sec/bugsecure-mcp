@@ -263,6 +263,16 @@ time and is never edited by hand.
   elicitation) and only runs the handler once they approve; `defineTool`
   refuses a write tool without it. Never add a "confirmed" argument: the model
   fills arguments, the user answers approvals.
+- **Every write carries its idempotency key.** Each mutation document declares
+  `$clientRequestId: String!` and passes it; the handler sends
+  `context.clientRequestId` (the approval's nonce), or `partRequestId(…)` per
+  mutation when one call sends several (`src/tools/shared/request-id.ts`,
+  checked by `api-surface.test.ts`). Send the same variable shape on every
+  attempt (the API hashes `null` and an omitted field differently). The
+  framework resends a mutation once, with the same key, when its answer was
+  lost (`src/tools/shared/write-retry.ts`): never add a retry of your own, and
+  keep a caught write error's `hint`, which says whether the change may have
+  been made.
 - **Honest annotations.** `destructiveHint: true` when the change cannot be
   undone or overwrites data — so every current write tool is destructive (a
   report, comment, appeal, final status or grade cannot be taken back; a

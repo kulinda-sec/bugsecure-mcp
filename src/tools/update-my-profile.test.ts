@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups } from '../../test/helpers/fake-graphql.js';
+import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 
 const WRITER = ['profile:write', 'profile:read'] as const;
@@ -38,7 +38,10 @@ describe('update_my_profile', () => {
     expect(withoutLookups(graphql.calls)).toEqual([
       {
         operation: 'UpdateMyProfile',
-        variables: { input: { bio: 'Web and mobile.\nSee my site.', website: 'https://ada.example' } },
+        variables: {
+          input: { bio: 'Web and mobile.\nSee my site.', website: 'https://ada.example' },
+          clientRequestId: REQUEST_ID,
+        },
       },
     ]);
     const { profile } = result.structuredContent as { profile: { bio: string } };
@@ -52,7 +55,10 @@ describe('update_my_profile', () => {
     await harness.call('update_my_profile', { country: '' });
 
     expect(harness.prompts[0]?.message).toContain('An empty value clears that field.');
-    expect(withoutLookups(graphql.calls)[0]?.variables).toEqual({ input: { country: '' } });
+    expect(withoutLookups(graphql.calls)[0]?.variables).toEqual({
+      input: { country: '' },
+      clientRequestId: REQUEST_ID,
+    });
   });
 
   it('refuses a non-researcher account before asking', async () => {

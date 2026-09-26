@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups } from '../../test/helpers/fake-graphql.js';
+import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
 import { SAMPLE_ARGS } from '../../test/helpers/sample-args.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 
@@ -66,6 +66,7 @@ describe('save_disclosure_draft', () => {
       {
         operation: 'SaveDisclosureDraft',
         variables: {
+          clientRequestId: REQUEST_ID,
           input: {
             reportId: 'r1',
             revision: 3,

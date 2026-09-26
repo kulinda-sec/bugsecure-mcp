@@ -15,6 +15,13 @@
  *   describe its exact payload (`approval`); the framework asks the user via
  *   MCP elicitation and runs the handler only after they approve (see
  *   ./approval.ts). Clients that cannot ask are refused, never trusted.
+ * - **Each write at most once.** The handler gets an idempotency key
+ *   (`clientRequestId`): the approval's nonce, so the API answers a replayed
+ *   approval with what the first one wrote (see ./shared/request-id.ts). Every
+ *   mutation a handler sends must carry it (the operations declare it
+ *   required). A mutation whose answer was lost (timeout, network, 5xx, an
+ *   internal error) is resent once with the same key, and if that fails too
+ *   the error says the change may have been made (see ./shared/write-retry.ts).
  * - **Honest annotations.** `readOnlyHint` must agree with the scopes (a tool
  *   needing a write scope is not read-only, and vice versa); a read-only tool
  *   cannot claim to be destructive. Checked when the module loads.
@@ -46,6 +53,8 @@ import { formatScopes, hasAllScopes, isWriteScope, type Scope, WRITE_SCOPES_WITH
 import { UNTRUSTED_TAG, withResponseNonce } from '../untrusted.js';
 import type { ApprovalGate, ApprovalPrompt } from './approval.js';
 import { publish } from './json-schema.js';
+import { newClientRequestId } from './shared/request-id.js';
+import { resendingLostWrites } from './shared/write-retry.js';
 
 /**
  * MCP tool annotations. All four hints are REQUIRED here (they are optional in
@@ -105,6 +114,16 @@ export class SessionMemo {
   }
 }
 
+/** What a tool handler gets: the approval-time context, plus the idempotency key of its writes. */
+export interface HandlerContext extends ToolContext {
+  /**
+   * Send as `clientRequestId` with every mutation (one mutation per call; a
+   * tool sending several derives one key each with `partRequestId`). For an
+   * approved write it is the approval's nonce; otherwise a fresh key per call.
+   */
+  readonly clientRequestId: string;
+}
+
 /** What a tool handler returns. `data` must match the tool's `output` schema. */
 export interface ToolResult<TOutput> {
   readonly data: TOutput;
@@ -143,7 +162,7 @@ export interface ToolDefinition<I extends ObjectSchema, O extends ObjectSchema> 
   approval?(input: z.output<I>, context: ToolContext): ApprovalPrompt | Promise<ApprovalPrompt>;
   // Method syntax (not a property) on purpose: it keeps concrete tools
   // assignable to the type-erased `AnyTool` used by the registry.
-  handler(input: z.output<I>, context: ToolContext): Promise<ToolResult<z.input<O>>>;
+  handler(input: z.output<I>, context: HandlerContext): Promise<ToolResult<z.input<O>>>;
 }
 
 export type AnyTool = ToolDefinition<ObjectSchema, ObjectSchema>;
@@ -221,6 +240,13 @@ export interface RegisterToolsOptions {
   grantedScopes(): Promise<ReadonlySet<Scope> | undefined>;
   /** The signed-in user's id (token `sub`), when known. */
   viewerId?(): Promise<string | undefined>;
+  /**
+   * Scopes the user approved for this connection, when they can differ from
+   * `grantedScopes` (hosted: the inbound token's, which the token exchange may
+   * narrow). One approved but not granted was withheld by BugSecure, and an
+   * insufficient-scope error does not ask the user to approve it again.
+   */
+  approvedScopes?(): Promise<ReadonlySet<Scope> | undefined>;
   /** Per-session lookup cache (one per built server). */
   readonly memo?: SessionMemo;
   /** Asks the user to approve each write (required when write tools are registered). */
@@ -284,6 +310,7 @@ const runTool = async (
       memo: options.memo ?? new SessionMemo(),
     };
 
+    let clientRequestId: string | undefined;
     if (tool.approval !== undefined) {
       if (call.ctx === undefined) return errorResult('Write tools can only run inside an MCP request.');
       const approval = tool.approval.bind(tool);
@@ -292,9 +319,15 @@ const runTool = async (
         () => approval(args, context),
       );
       if (outcome.kind === 'respond') return outcome.result;
+      clientRequestId = outcome.clientRequestId;
     }
 
-    const result = await tool.handler(args, context);
+    const result = await tool.handler(args, {
+      ...context,
+      // Only the handler's writes are resent; the approval's lookups are plain reads.
+      graphql: resendingLostWrites(context.graphql, { logger }),
+      clientRequestId: clientRequestId ?? newClientRequestId(),
+    });
     const parsed = tool.output.safeParse(result.data);
     if (!parsed.success) {
       logger.error('tool output failed its own schema', {
@@ -309,13 +342,23 @@ const runTool = async (
     if (call.signal.aborted) throw error; // cancelled: let the SDK drop the response
     if (error instanceof BugSecureError) {
       logger.info('tool error', { errorCode: error.code });
-      return errorResult(describeError(error, options.mode, granted));
+      return errorResult(describeError(error, options.mode, granted, await withheldScopes(options, granted)));
     }
     logger.error('tool failed unexpectedly', {
       errorName: error instanceof Error ? error.name : typeof error,
     });
     return errorResult('An unexpected error occurred in bugsecure-mcp. Details are in the server log.');
   }
+};
+
+/** Scopes approved for this connection that BugSecure did not grant (see `approvedScopes`). */
+const withheldScopes = async (
+  options: RegisterToolsOptions,
+  granted: ReadonlySet<Scope> | undefined,
+): Promise<ReadonlySet<Scope>> => {
+  if (granted === undefined || options.approvedScopes === undefined) return new Set();
+  const approved = await options.approvedScopes().catch(() => undefined);
+  return new Set([...(approved ?? [])].filter((s) => !granted.has(s)));
 };
 
 /**

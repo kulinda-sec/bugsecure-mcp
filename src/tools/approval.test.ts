@@ -38,6 +38,7 @@ import {
 } from './approval.js';
 import { isWriteTool } from './define-tool.js';
 import { ALL_TOOLS } from './index.js';
+import { CLIENT_REQUEST_ID } from './shared/request-id.js';
 
 const posted = { id: 'c9', reportId: 'r1', isInternal: false, createdAt: '2026-09-21T10:00:00.000Z' };
 const API = {
@@ -127,6 +128,21 @@ describe('every write tool', () => {
       required: ['approve'],
     });
     expect(writesIn(graphql)).toEqual([WRITE_OPERATION[name]]);
+  });
+
+  it.each(WRITE_TOOLS)("%s sends its write with the approval's idempotency key", async (name) => {
+    const graphql = fakeGraphQL(API);
+    harness = await connectTools({ graphql, viewerId: viewerFor(name) });
+    await harness.call(name, SAMPLE_ARGS[name] ?? {});
+    const writes = graphql.calls.filter((c) => c.operation === WRITE_OPERATION[name]);
+    expect(writes).toHaveLength(1);
+    const key = writes[0]?.variables.clientRequestId;
+    expect(key).toEqual(expect.stringMatching(CLIENT_REQUEST_ID));
+    // A second, separately approved call is a new write: a new key.
+    await harness.call(name, SAMPLE_ARGS[name] ?? {});
+    const again = graphql.calls.filter((c) => c.operation === WRITE_OPERATION[name]);
+    expect(again).toHaveLength(2);
+    expect(again[1]?.variables.clientRequestId).not.toBe(key);
   });
 
   it.each(WRITE_TOOLS)('%s names what the ids refer to, looked up read-only', async (name) => {
@@ -350,7 +366,11 @@ describe('what is approved is what is sent', () => {
 
   it('says a final status is irreversible, and that INFORMATIVE does not stop the deadline', async () => {
     harness = await connectTools({ graphql: fakeGraphQL(API), viewerId: 'triager-1' });
-    await harness.call('update_report_status', { reportId: 'r1', status: 'NOT_APPLICABLE' });
+    await harness.call('update_report_status', {
+      reportId: 'r1',
+      status: 'NOT_APPLICABLE',
+      reason: 'The endpoint named is not part of this programme.',
+    });
     await harness.call('update_report_status', { reportId: 'r1', status: 'INFORMATIVE' });
     const [final, open] = harness.prompts.map((p) => p.message);
     expect(final).toContain('This cannot be undone, edited or withdrawn afterwards.');
@@ -411,7 +431,8 @@ describe('multi round-trip integrity (raw wire)', () => {
     wire = undefined;
   });
 
-  const serve = (principal = 'alice'): Wire => {
+  /** One server instance; `memory` is its own used-approval memory (another instance has another). */
+  const serve = (principal = 'alice', memory: ApprovalReplayGuard = replay): Wire => {
     const graphql = fakeGraphQL(API);
     const handler = createMcpHandler(() =>
       buildServer({
@@ -420,7 +441,7 @@ describe('multi round-trip integrity (raw wire)', () => {
         logger: silentLogger,
         grantedScopes: () => Promise.resolve(new Set(SCOPES)),
         readOnly: false,
-        approvals: new ApprovalGate({ key, principal, replay, logger: silentLogger }),
+        approvals: new ApprovalGate({ key, principal, replay: memory, logger: silentLogger }),
       }),
     );
     return { handler, graphql, close: () => handler.close() };
@@ -488,14 +509,59 @@ describe('multi round-trip integrity (raw wire)', () => {
     expect(writesIn(wire.graphql)).toHaveLength(1);
   });
 
-  it('refuses to replay an approval', async () => {
+  it('refuses to replay an approval, saying the change was already sent and what to check', async () => {
     wire = serve();
     const requestState = await firstRound(wire.handler);
     await callTool(wire.handler, args, { inputResponses: approved, requestState });
+    const sent = wire.graphql.calls.length;
     const again = await callTool(wire.handler, args, { inputResponses: approved, requestState });
     expect(again).toMatchObject({ isError: true });
-    expect(JSON.stringify(again.content)).toContain('already used');
+    const text = JSON.stringify(again.content);
+    expect(text).toContain('already used');
+    // A client re-issuing a call whose stream broke carries the same state (spec 2026-07-28):
+    // the model must check, not ask for a new approval, which would be a new key.
+    expect(text).toContain('was sent then');
+    expect(text).toContain('get_report or list_my_reports');
+    expect(text).not.toContain('Nothing was sent');
+    // Refused before any lookup or write.
+    expect(wire.graphql.calls).toHaveLength(sent);
     expect(writesIn(wire.graphql)).toHaveLength(1);
+  });
+
+  it('sends the approved write with the approval’s nonce as its idempotency key', async () => {
+    wire = serve();
+    const requestState = await firstRound(wire.handler);
+    await callTool(wire.handler, args, { inputResponses: approved, requestState });
+    const [write] = wire.graphql.calls.filter((c) => c.operation === 'AddReportComment');
+    const key = write?.variables.clientRequestId;
+    expect(key).toEqual(expect.stringMatching(CLIENT_REQUEST_ID));
+    // The state's payload is readable (only sealed): `v1.<base64url JSON {p: {t, d, n}, …}>.<mac>`.
+    const payload = JSON.parse(
+      Buffer.from(requestState.split('.')[1] ?? '', 'base64url').toString('utf8'),
+    ) as { p: { n: string } };
+    expect(key).toBe(payload.p.n);
+  });
+
+  it('a replay on another instance, which has its own memory, is sent with the first use’s key', async () => {
+    wire = serve('alice', new ApprovalReplayGuard());
+    const other = serve('alice', new ApprovalReplayGuard());
+    try {
+      const requestState = await firstRound(wire.handler);
+      const first = await callTool(wire.handler, args, { inputResponses: approved, requestState });
+      const replayed = await callTool(other.handler, args, { inputResponses: approved, requestState });
+      expect(first).toMatchObject({ resultType: 'complete' });
+      // That instance never saw the approval used, so it sends it, with the same key. Whether
+      // that writes once is the API's part: it answers a key it already committed with what the
+      // first request wrote (SECURITY.md § Requirements). This checks what the MCP controls.
+      expect(replayed).toMatchObject({ resultType: 'complete' });
+      const keys = [...wire.graphql.calls, ...other.graphql.calls]
+        .filter((c) => c.operation === 'AddReportComment')
+        .map((c) => c.variables.clientRequestId);
+      expect(keys).toHaveLength(2);
+      expect(keys[1]).toBe(keys[0]);
+    } finally {
+      await other.close();
+    }
   });
 
   it('asks again (and writes nothing) when the retry carries different arguments', async () => {

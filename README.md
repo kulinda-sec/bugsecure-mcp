@@ -275,13 +275,27 @@ not sent, the dialog names what the ids refer to — the programme, the report's
 title, the researcher, the grade you appeal — as looked up read-only on
 BugSecure; if a lookup is not possible it says so and shows the id only.
 
+Each approved change carries the approval's single-use nonce as an idempotency
+key. If its answer is lost (a timeout, a dropped connection, a 5xx, an internal
+error), the server resends it once with that same key, which BugSecure answers
+with what the first request wrote rather than a second change; if the resend
+gets no confirmation either, the tool says the change may already have been
+made, to check before approving it again. A replayed approval is sent with the
+same key too, so it gets back what the first one did and makes no second
+change, for every write (see [SECURITY.md](SECURITY.md#requirements)). Write
+tools need a BugSecure API that stores idempotency keys on every write
+(September 2026); with an older API they report it and send nothing, and read
+tools keep working.
+
 An approval can carry at most 50,000 characters in total: more than that cannot
 be reviewed in a dialog, so such a report is refused before you are asked, and
 belongs on the website. Tool inputs refuse control characters other than tab
 and new line outright.
 
 This is fail-closed: a client that cannot show approval dialogs gets an error
-from every write tool, and read tools keep working. Support as of September 2026:
+from every write tool, and read tools keep working. Client support as last checked
+on **25 September 2026** (clients change quickly: check your client's current
+documentation if a row looks out of date):
 
 | Client                     | Approval dialogs (elicitation)                                                        | Writes with the local server | Writes with the hosted server                                                                                                                                                                                |
 | -------------------------- | ------------------------------------------------------------------------------------- | :--------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -339,8 +353,10 @@ and platform administration), and a test keeps it that way.
 - **You approve every write.** See [Write tools and approvals](#write-tools-and-approvals).
   The approval is bound to your identity, to the exact arguments (a SHA-256
   digest, HMAC-sealed in the request state) and to ten minutes, and can be used
-  once per server instance (see [Self-hosting](#self-hosting-the-remote-server)
-  for what that means with several instances).
+  once per server instance. Its single-use nonce is also sent to the API as the
+  write's idempotency key, so a replay that reaches another instance gets the
+  first result back instead of a second change, for every write (see
+  [SECURITY.md](SECURITY.md#requirements)).
 - **OAuth 2.1 in both modes.**
   - _Local:_ the CLI is a public OAuth client. Login uses the authorization code
     flow with PKCE (S256), a random `state` compared in constant time, and
@@ -444,14 +460,23 @@ resource and the confidential client. Approval prompts are sealed with the
 dedicated approval key (`openssl rand -base64 32`; the server refuses to start
 without one unless its resource is on localhost), so every instance behind a
 load balancer must share it; rotating it only invalidates approvals in flight.
-Each instance remembers used approvals for ten minutes: a replay of an approved
-call landing on another instance within that window is not detected by that
-memory. It still needs the same user, client and exact arguments; for
-`submit_report` the server also refuses a report whose exact title was filed on
-the same programme by the same user within those ten minutes (when it can read
-your reports), and the other writes are refused by the API when repeated
-(one grade per report, status moves that are already done) or are comments. See
-[SECURITY.md](SECURITY.md#known-limitations).
+Each instance remembers used approvals for ten minutes and refuses a second use.
+Instances do not share that memory; the API's key store covers what it
+misses: every approved write is sent with its approval's nonce as an idempotency
+key (`clientRequestId`), and the BugSecure API performs each write at most once
+per user, operation and key. A replayed approval that reaches another instance
+then gets back what the first write did, and no second report, comment or
+change is made. Write tools need a BugSecure API that stores idempotency keys
+on every write (September 2026): an older API refuses every write from this
+version, and the tools say so. See [SECURITY.md](SECURITY.md#requirements).
+
+The server does not rate limit requests before they are authenticated: every
+request with a bearer token has its JWT signature verified, and the JWKS
+refetch cooldown (in `jose`) only limits how often the signing keys are
+fetched, not how many tokens are checked. Tool calls are rate limited per user
+once authenticated. Put it behind a reverse proxy or WAF that rate limits per
+client IP (and caps connections), so unauthenticated traffic cannot spend its
+CPU on signature checks.
 
 ## Development
 

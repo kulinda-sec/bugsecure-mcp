@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups } from '../../test/helpers/fake-graphql.js';
+import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
 
@@ -31,7 +31,10 @@ describe('add_triage_comment', () => {
     expect(withoutLookups(graphql.calls)).toEqual([
       {
         operation: 'AddTriageComment',
-        variables: { input: { reportId: 'r1', content: 'Likely dupe.', isInternal: true } },
+        variables: {
+          input: { reportId: 'r1', content: 'Likely dupe.', isInternal: true },
+          clientRequestId: REQUEST_ID,
+        },
       },
     ]);
     expect(result.structuredContent).toMatchObject({ comment: { id: 'c9', internal: true } });

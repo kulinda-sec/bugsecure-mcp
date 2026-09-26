@@ -44,10 +44,10 @@ export const addReportComment = defineTool({
       ],
     };
   },
-  async handler(input, { graphql, signal }) {
+  async handler(input, { graphql, signal, clientRequestId }) {
     const { addReportComment } = await graphql.request(
       AddReportCommentDocument,
-      { input: { reportId: input.reportId, content: input.content, isInternal: false } },
+      { input: { reportId: input.reportId, content: input.content, isInternal: false }, clientRequestId },
       { signal },
     );
     return { data: { comment: toPostedComment(addReportComment) } };

@@ -235,7 +235,8 @@ describe('GraphQL client', () => {
     ['CONFLICT', 'CONFLICT'],
     ['TOO_MANY_REQUESTS', 'RATE_LIMITED'],
     ['GRAPHQL_VALIDATION_FAILED', 'UPSTREAM_ERROR'],
-    ['INTERNAL_SERVER_ERROR', 'UPSTREAM_ERROR'],
+    ['INTERNAL_SERVER_ERROR', 'UPSTREAM_UNAVAILABLE'],
+    ['REPORT_DAILY_CAP_REACHED', 'RATE_LIMITED'],
   ])('maps GraphQL code %s to %s', async (code, expected) => {
     const fetch = vi.fn(() =>
       Promise.resolve(jsonResponse({ errors: [{ message: 'x', extensions: { code } }] })),
@@ -266,12 +267,32 @@ describe('GraphQL client', () => {
     });
   });
 
-  it('never relays internal error messages', () => {
+  it('never relays internal error messages, and treats one as an answer that was lost', () => {
     const e = mapGraphQLErrors([
       { message: 'SELECT * FROM users failed at db-7', extensions: { code: 'INTERNAL_SERVER_ERROR' } },
     ]);
     expect(e.message).not.toContain('SELECT');
-    expect(e.code).toBe('UPSTREAM_ERROR');
+    expect(e.message).toContain('failed while handling this request');
+    // As an answered 5xx: a write that got this is resent once under its key (write-retry.ts).
+    expect(e.code).toBe('UPSTREAM_UNAVAILABLE');
+    const text = describeError(e, 'local');
+    expect(text).toContain('Retry shortly');
+    expect(text).not.toContain('could not be reached');
+  });
+
+  it('tells the model a daily report cap is not a burst limit', () => {
+    const e = mapGraphQLErrors([
+      {
+        message: 'You have submitted 40 reports in the last 24 hours, the most one account may.',
+        extensions: { code: 'REPORT_DAILY_CAP_REACHED' },
+      },
+    ]);
+    expect(e.code).toBe('RATE_LIMITED');
+    const text = describeError(e, 'hosted');
+    expect(text).toContain('40 reports in the last 24 hours');
+    expect(text).toMatch(/daily cap/);
+    expect(text).toMatch(/do not ask the user to approve the report again today/);
+    expect(text).not.toContain('Wait before retrying');
   });
 
   it('relays a refusal it does not know, fenced and cleaned, not as an internal error', () => {
@@ -299,6 +320,7 @@ describe('GraphQL client', () => {
     ['BAD_USER_INPUT', 'INVALID_INPUT', 'BugSecure refused the input'],
     ['CONFLICT', 'CONFLICT', 'BugSecure refused this in the current state'],
     ['FILE_REFUSED', 'INVALID_INPUT', 'BugSecure refused a file'],
+    ['REPORT_DAILY_CAP_REACHED', 'RATE_LIMITED', 'BugSecure refused the report'],
   ])('fences the API’s text for %s', (apiCode, code, lead) => {
     const e = mapGraphQLErrors([{ message: 'text from the API', extensions: { code: apiCode } }]);
     expect(e.code).toBe(code);
@@ -323,6 +345,43 @@ describe('GraphQL client', () => {
     const e = mapGraphQLErrors([...generic, { message: 'x', extensions: { code: apiCode } }]);
     expect(e.code).toBe(code);
     expect(describeError(e, 'local')).toMatch(advice);
+  });
+
+  it.each([
+    [
+      'IDEMPOTENCY_KEY_IN_PROGRESS',
+      'REQUEST_IN_PROGRESS',
+      /still processing this same approved change/,
+      /Do not retry/,
+    ],
+    [
+      'IDEMPOTENCY_KEY_REUSED',
+      'REQUEST_KEY_REUSED',
+      /already used this approval for a different change/,
+      /approve it again/,
+    ],
+  ])(
+    'maps the idempotency refusal %s to %s, telling the model not to retry',
+    (apiCode, code, message, advice) => {
+      const e = mapGraphQLErrors([{ message: 'text from the API', extensions: { code: apiCode } }]);
+      expect(e.code).toBe(code);
+      expect(e.message).toMatch(message);
+      expect(e.message).not.toContain('text from the API');
+      expect(describeError(e, 'hosted')).toMatch(advice);
+    },
+  );
+
+  it('explains an API that predates idempotency keys, without relaying its message', () => {
+    const e = mapGraphQLErrors([
+      {
+        message: 'Unknown argument "clientRequestId" on field "Mutation.submitReport".',
+        extensions: { code: 'GRAPHQL_VALIDATION_FAILED' },
+      },
+    ]);
+    expect(e.code).toBe('UPSTREAM_OUTDATED');
+    expect(e.message).toContain('does not accept idempotency keys yet');
+    expect(e.message).not.toContain('Unknown argument');
+    expect(describeError(e, 'local')).toContain('Nothing was written');
   });
 
   it('says whose terms are missing: the researcher’s own, or the organisation’s (termsKind)', () => {

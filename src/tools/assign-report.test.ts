@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups } from '../../test/helpers/fake-graphql.js';
+import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 
 const TRIAGER = ['triage:write', 'profile:read', 'triage:read'] as const;
@@ -40,7 +40,10 @@ describe('assign_report', () => {
     expect(message).toContain('Assigned now:\n│ previous-triager');
     expect(message).toContain('── Assignee (15 characters, 1 line)\n│ you (triager-1)');
     expect(withoutLookups(graphql.calls)).toEqual([
-      { operation: 'AssignReport', variables: { reportId: 'r1', triageUserId: 'triager-1' } },
+      {
+        operation: 'AssignReport',
+        variables: { reportId: 'r1', triageUserId: 'triager-1', clientRequestId: REQUEST_ID },
+      },
     ]);
     expect(result.structuredContent).toMatchObject({
       report: { id: 'r1', assignedTriage: { id: 'triager-1' } },
@@ -56,6 +59,7 @@ describe('assign_report', () => {
     expect(withoutLookups(graphql.calls)[0]?.variables).toEqual({
       reportId: 'r1',
       triageUserId: 'triager-1',
+      clientRequestId: REQUEST_ID,
     });
   });
 

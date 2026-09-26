@@ -68,12 +68,12 @@ export const assignReport = defineTool({
     };
   },
   async handler(input, context) {
-    const { graphql, signal, logger } = context;
+    const { graphql, signal, logger, clientRequestId } = context;
     const me = self(context.viewerId);
     await notStaff(context);
     const { assignTriageAnalyst: r } = await graphql.request(
       AssignReportDocument,
-      { reportId: input.reportId, triageUserId: me },
+      { reportId: input.reportId, triageUserId: me, clientRequestId },
       { signal },
     );
     logger.info('report assigned', { reportId: r.id });

@@ -131,7 +131,7 @@ export const saveDisclosureDraft = defineTool({
       ],
     };
   },
-  async handler(input, { graphql, signal, logger }) {
+  async handler(input, { graphql, signal, logger, clientRequestId }) {
     const { saveReportDisclosure } = await graphql.request(
       SaveDisclosureDraftDocument,
       {
@@ -143,6 +143,7 @@ export const saveDisclosureDraft = defineTool({
           writeup: input.writeup,
           creditResearcher: input.creditResearcher,
         },
+        clientRequestId,
       },
       { signal },
     );

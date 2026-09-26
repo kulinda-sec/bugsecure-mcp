@@ -1,6 +1,6 @@
 # Tool: add_report_comment (reports:write)
-mutation AddReportComment($input: AddCommentInput!) {
-  addReportComment(input: $input) {
+mutation AddReportComment($input: AddCommentInput!, $clientRequestId: String!) {
+  addReportComment(input: $input, clientRequestId: $clientRequestId) {
     id
     reportId
     isInternal

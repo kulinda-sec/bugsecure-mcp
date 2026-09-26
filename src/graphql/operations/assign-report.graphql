@@ -1,6 +1,6 @@
 # Tool: assign_report (triage:write) — assign a report of an opted-in organisation to a seat of it.
-mutation AssignReport($reportId: ID!, $triageUserId: ID!) {
-  assignTriageAnalyst(reportId: $reportId, triageUserId: $triageUserId) {
+mutation AssignReport($reportId: ID!, $triageUserId: ID!, $clientRequestId: String!) {
+  assignTriageAnalyst(reportId: $reportId, triageUserId: $triageUserId, clientRequestId: $clientRequestId) {
     id
     assignedTriage {
       id

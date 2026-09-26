@@ -1,8 +1,8 @@
 # Tool: grade_report (grade:write) — grade a report as the organization that owns it.
 # Returns null when no certificate issues: an organization's Critical grade waits
 # on BugSecure's review, and a severity the grid does not pay issues none.
-mutation GradeReport($input: AdjudicateReportInput!) {
-  adjudicateReport(input: $input) {
+mutation GradeReport($input: AdjudicateReportInput!, $clientRequestId: String!) {
+  adjudicateReport(input: $input, clientRequestId: $clientRequestId) {
     id
     reference
     reportId

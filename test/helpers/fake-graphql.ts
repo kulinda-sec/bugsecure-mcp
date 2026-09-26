@@ -2,7 +2,14 @@
  * An in-memory GraphQLClient for tool tests: route by operation name, record
  * every call. Handlers return the `data` object or throw (e.g. a BugSecureError).
  */
+import { expect } from 'vitest';
+
+import { BugSecureError } from '../../src/errors.js';
 import type { GraphQLClient, TypedDocument } from '../../src/graphql/client.js';
+import { CLIENT_REQUEST_ID } from '../../src/tools/shared/request-id.js';
+
+/** Matches the idempotency key every write sends (`clientRequestId`). */
+export const REQUEST_ID: unknown = expect.stringMatching(CLIENT_REQUEST_ID);
 
 export type OperationHandler = (variables: Record<string, unknown>) => unknown;
 
@@ -41,6 +48,45 @@ export const fakeGraphQL = (handlers: Record<string, OperationHandler>): FakeGra
       }
     },
   };
+};
+
+export interface IdempotentWrite extends OperationHandler {
+  /** How many times the write itself ran (a replayed key does not run it). */
+  readonly writes: () => number;
+}
+
+/** How a lost answer fails by default: as a timeout or a dropped connection does. */
+const timedOut = (): never => {
+  throw new BugSecureError('UPSTREAM_UNAVAILABLE', 'The BugSecure API timed out.');
+};
+
+/**
+ * A mutation handler that behaves like the API's key store: the first request
+ * with a `clientRequestId` runs `write` and commits, a repeat of that key gets
+ * the recorded result. The first `drop` answers are lost AFTER the commit,
+ * thrown by `lose` (default: UPSTREAM_UNAVAILABLE as a timeout is; pass the
+ * mapped INTERNAL_SERVER_ERROR for "committed, then failed while answering").
+ */
+export const idempotentWrite = (
+  write: (variables: Record<string, unknown>) => unknown,
+  { drop = 0, lose = timedOut }: { drop?: number; lose?: () => never } = {},
+): IdempotentWrite => {
+  const recorded = new Map<string, unknown>();
+  let runs = 0;
+  let dropped = 0;
+  const handler = (variables: Record<string, unknown>): unknown => {
+    const key = String(variables.clientRequestId);
+    if (!recorded.has(key)) {
+      runs += 1;
+      recorded.set(key, write(variables));
+    }
+    if (dropped < drop) {
+      dropped += 1;
+      lose();
+    }
+    return recorded.get(key);
+  };
+  return Object.assign(handler, { writes: () => runs });
 };
 
 /** Operations the write tools send before writing: safety checks and approval-prompt lookups. */

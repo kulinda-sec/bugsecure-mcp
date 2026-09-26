@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups } from '../../test/helpers/fake-graphql.js';
-import { reportSummary } from '../../test/helpers/report-fixtures.js';
+import { fakeGraphQL, lookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
 import { revealForReview } from '../untrusted.js';
+import { CLIENT_REQUEST_ID } from './shared/request-id.js';
 
 const args = {
   programId: 'p1',
@@ -55,6 +55,7 @@ describe('submit_report', () => {
       {
         operation: 'SubmitReport',
         variables: {
+          clientRequestId: REQUEST_ID,
           input: {
             programId: 'p1',
             title: args.title,
@@ -182,49 +183,14 @@ describe('submit_report', () => {
     expect(harness.prompts[0]?.message).toContain('Programme:\n│ Acme web (run by Acme)');
   });
 
-  it('refuses what looks like a replayed approval: the same title on the same programme minutes ago', async () => {
-    const recent = reportSummary('r9', {
-      title: args.title,
-      createdAt: new Date(Date.now() - 60_000).toISOString(),
-    });
-    const graphql = fakeGraphQL({
-      ListMyReports: () => ({ reports: [recent] }),
-      SubmitReport: () => ({ submitReport: created }),
-    });
-    harness = await connectTools({ graphql, grantedScopes: ['reports:write', 'reports:read'] });
-
-    const result = await harness.call('submit_report', args);
-
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain(
-      'Nothing was sent: you filed a report with this exact title on this programme',
-    );
-    expect(textOf(result)).toContain('report r9');
-    expect(graphql.calls.map((c) => c.operation)).toEqual(['ListMyReports']);
-    expect(graphql.calls[0]?.variables).toMatchObject({
-      filters: { programId: 'p1', search: args.title, reporterId: 'researcher-1' },
-    });
-  });
-
-  it('submits when the similar report is older than an approval can live, or the check fails', async () => {
-    const old = reportSummary('r9', { title: args.title, createdAt: '2026-01-01T00:00:00.000Z' });
-    const graphql = fakeGraphQL({
-      ListMyReports: () => ({ reports: [old] }),
-      SubmitReport: () => ({ submitReport: created }),
-    });
+  it('sends one write with an idempotency key, and no duplicate lookup, whatever it may read', async () => {
+    // A replayed approval is harmless at the API (same key, same arguments: one report), so
+    // submitting no longer looks for a recent report with the same title first.
+    const graphql = fakeGraphQL({ SubmitReport: () => ({ submitReport: created }) });
     harness = await connectTools({ graphql, grantedScopes: ['reports:write', 'reports:read'] });
     expect((await harness.call('submit_report', args)).isError).toBeFalsy();
-    await harness.close();
-
-    const down = fakeGraphQL({
-      ListMyReports: () => {
-        throw new Error('down');
-      },
-      SubmitReport: () => ({ submitReport: created }),
-    });
-    harness = await connectTools({ graphql: down, grantedScopes: ['reports:write', 'reports:read'] });
-    expect((await harness.call('submit_report', args)).isError).toBeFalsy();
-    expect(down.calls.map((c) => c.operation)).toEqual(['ListMyReports', 'SubmitReport']);
+    expect(graphql.calls.map((c) => c.operation)).toEqual(['SubmitReport']);
+    expect(graphql.calls[0]?.variables.clientRequestId).toEqual(expect.stringMatching(CLIENT_REQUEST_ID));
   });
 
   it('normalises Windows line endings and refuses control characters', async () => {

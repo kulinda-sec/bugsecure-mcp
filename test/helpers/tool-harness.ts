@@ -41,6 +41,8 @@ export interface HarnessOptions {
   readonly approve?: ApprovalAnswer;
   /** The signed-in user's id (token `sub`); default: the fixtures' reporter. `null` = unknown. */
   readonly viewerId?: string | null;
+  /** Scopes the user approved (hosted), when BugSecure granted fewer (`grantedScopes`). */
+  readonly approvedScopes?: readonly Scope[];
 }
 
 export interface ElicitationPrompt {
@@ -102,6 +104,9 @@ export const connectTools = async (options: HarnessOptions): Promise<Harness> =>
       grantedScopes: () => Promise.resolve(scopes),
       viewerId: () =>
         Promise.resolve(options.viewerId === null ? undefined : (options.viewerId ?? REPORTER_ID)),
+      ...(options.approvedScopes === undefined
+        ? {}
+        : { approvedScopes: () => Promise.resolve(new Set(options.approvedScopes)) }),
       readOnly: options.readOnly ?? false,
       approvals,
       ...(options.tools === undefined ? {} : { tools: options.tools }),

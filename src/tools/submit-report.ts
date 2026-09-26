@@ -1,59 +1,17 @@
 import * as z from 'zod';
 
-import { BugSecureError } from '../errors.js';
-import { GetProgramRefDocument, ListMyReportsDocument, SubmitReportDocument } from '../graphql/generated.js';
+import { GetProgramRefDocument, SubmitReportDocument } from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
-import { APPROVAL_TTL_SECONDS, MAX_APPROVAL_CHARACTERS } from './approval.js';
+import { MAX_APPROVAL_CHARACTERS } from './approval.js';
 import { id, idInput, safeSlug, slug, timestamp, userText, wrapped } from './shared/common.js';
 import { ReportStatusSchema, SeveritySchema } from './shared/report.js';
-import { defineTool, type ToolContext } from './define-tool.js';
+import { defineTool } from './define-tool.js';
 
 // CVSS v3.1 base vector, metrics in specification order — the only form BugSecure scores.
 const CVSS_31 = /^CVSS:3\.1\/AV:[NALP]\/AC:[LH]\/PR:[NLH]\/UI:[NR]\/S:[UC]\/C:[HLN]\/I:[HLN]\/A:[HLN]$/;
 
 const text = (min: number, max: number, what: string): z.ZodString =>
   userText(min, max, `${what} (${String(min)}–${max.toLocaleString('en-US')} characters, Markdown).`);
-
-/**
- * A replayed approval (a second instance of the hosted server has its own
- * single-use memory, see approval.ts) would file the same report twice. The
- * API has no idempotency key for submitReport, so before submitting, look for
- * a report by this user, on this programme, with this exact title, filed
- * within the approval lifetime: if there is one, this is almost certainly a
- * repeat, and nothing is sent. Needs reports:read; without it the check is
- * skipped (and the residual risk is documented in SECURITY.md).
- */
-const REPLAY_WINDOW_MS = APPROVAL_TTL_SECONDS * 1000;
-
-const findRecentDuplicate = async (
-  input: { programId: string; title: string },
-  { graphql, signal, granted, viewerId }: ToolContext,
-): Promise<string | undefined> => {
-  if (!granted.has('reports:read')) return undefined;
-  const { reports } = await graphql.request(
-    ListMyReportsDocument,
-    {
-      filters: {
-        programId: input.programId,
-        search: input.title,
-        reporterId: viewerId ?? null,
-        status: null,
-        severity: null,
-      },
-      skip: 0,
-      take: 20,
-    },
-    { signal },
-  );
-  const since = Date.now() - REPLAY_WINDOW_MS;
-  return reports.find(
-    (r) =>
-      r.title === input.title &&
-      r.program?.id === input.programId &&
-      (viewerId === undefined || r.reporter.id === viewerId) &&
-      Date.parse(r.createdAt) >= since,
-  )?.id;
-};
 
 export const submitReport = defineTool({
   name: 'submit_report',
@@ -69,8 +27,8 @@ export const submitReport = defineTool({
     `is submitted on the website. At most ${MAX_APPROVAL_CHARACTERS.toLocaleString('en-US')} characters in ` +
     'total, so the user can review it.',
   requiredScopes: ['reports:write'],
-  // programs:read shows the programme's name in the approval; reports:read guards against a replayed approval.
-  optionalScopes: ['programs:read', 'reports:read'],
+  // programs:read shows the programme's name in the approval.
+  optionalScopes: ['programs:read'],
   // Destructive: irreversible (a report cannot be withdrawn or edited). Not idempotent: every call files another.
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   input: z.object({
@@ -144,26 +102,9 @@ export const submitReport = defineTool({
       ],
     };
   },
-  async handler(input, context) {
-    const { graphql, signal, logger } = context;
-    let repeat: string | undefined;
-    try {
-      repeat = await findRecentDuplicate(input, context);
-    } catch (error) {
-      // Best effort: a failed check must not cost the user an approval they already gave.
-      if (signal.aborted) throw error;
-      logger.warn('replay check failed; submitting anyway');
-    }
-    if (repeat !== undefined) {
-      logger.warn('submit refused: identical report filed moments ago', { reportId: repeat });
-      throw new BugSecureError(
-        'CONFLICT',
-        `Nothing was sent: you filed a report with this exact title on this programme in the last ${String(
-          APPROVAL_TTL_SECONDS / 60,
-        )} minutes (report ${repeat}). This looks like a repeated submission.`,
-        { hint: 'Check it with get_report. If the user really wants a second report, change its title.' },
-      );
-    }
+  // A replayed approval files nothing new: its key (the approval's nonce) makes the API
+  // return the report the approval already filed (see ./shared/request-id.ts).
+  async handler(input, { graphql, signal, logger, clientRequestId }) {
     const { submitReport: r } = await graphql.request(
       SubmitReportDocument,
       {
@@ -177,6 +118,7 @@ export const submitReport = defineTool({
           remediation: input.remediation ?? null,
           cvssVector: input.cvssVector ?? null,
         },
+        clientRequestId,
       },
       { signal },
     );

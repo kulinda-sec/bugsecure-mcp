@@ -144,7 +144,7 @@ export const gradeReport = defineTool({
     };
   },
   async handler(input, context) {
-    const { graphql, signal, logger } = context;
+    const { graphql, signal, logger, clientRequestId } = context;
     await notStaff(context);
     const { adjudicateReport: c } = await graphql.request(
       GradeReportDocument,
@@ -160,6 +160,7 @@ export const gradeReport = defineTool({
           overrideAmount: input.overrideAmount ?? null,
           amountReason: input.amountReason ?? null,
         },
+        clientRequestId,
       },
       { signal },
     );

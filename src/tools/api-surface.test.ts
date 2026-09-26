@@ -47,7 +47,7 @@ import {
   type FragmentDefinitionNode,
   type GraphQLObjectType,
   Kind,
-  type OperationTypeNode,
+  OperationTypeNode,
   parse,
   type SelectionSetNode,
   TypeInfo,
@@ -235,6 +235,11 @@ const sourceFiles = (): string[] =>
 const repoPath = (path: string): string => relative(REPO_ROOT, path).split(sep).join('/');
 
 const GENERATED_MODULE = /(^|\/)graphql\/generated\.js$/;
+/**
+ * Files that only forward a request a tool made (the tool's own `.request(…)` call is the
+ * one checked here, in the tool's file) and send no document of their own.
+ */
+const FORWARDERS: ReadonlySet<string> = new Set(['src/tools/shared/write-retry.ts']);
 const INLINE_OPERATION = /^\s*(?:query|mutation|subscription)\b[^{}]*\{/;
 
 interface SourceScan {
@@ -273,9 +278,10 @@ const scanSource = (path: string): SourceScan => {
         const [first] = node.arguments;
         const name = first !== undefined && ts.isIdentifier(first) ? imported.get(first.text) : undefined;
         if (name === undefined) {
-          problems.push(
-            `${where(node)}: .request(…) must be passed a document imported from graphql/generated.js`,
-          );
+          if (!FORWARDERS.has(repoPath(path)))
+            problems.push(
+              `${where(node)}: .request(…) must be passed a document imported from graphql/generated.js`,
+            );
         } else {
           documents.push(name);
         }
@@ -395,6 +401,36 @@ describe('API surface: only what the API opens to connected apps', () => {
         }),
       );
     });
+    expect(problems).toEqual([]);
+  });
+
+  it('every mutation sends an idempotency key, as a required variable', () => {
+    // A write without `clientRequestId` could run twice on a replayed approval (tools/shared/request-id.ts).
+    const problems = loadOperations().flatMap((f) =>
+      f.document.definitions.flatMap((def) => {
+        if (def.kind !== Kind.OPERATION_DEFINITION || def.operation !== OperationTypeNode.MUTATION) return [];
+        const name = def.name?.value ?? '(anonymous)';
+        const variable = def.variableDefinitions?.find((v) => v.variable.name.value === 'clientRequestId');
+        const required =
+          variable?.type.kind === Kind.NON_NULL_TYPE &&
+          variable.type.type.kind === Kind.NAMED_TYPE &&
+          variable.type.type.name.value === 'String';
+        const roots = def.selectionSet.selections.filter((sel) => sel.kind === Kind.FIELD);
+        const unkeyed = roots.filter(
+          (field) =>
+            !(field.arguments ?? []).some(
+              (arg) =>
+                arg.name.value === 'clientRequestId' &&
+                arg.value.kind === Kind.VARIABLE &&
+                arg.value.name.value === 'clientRequestId',
+            ),
+        );
+        return [
+          ...(required ? [] : [`${f.location} (${name}): declare $clientRequestId: String!`]),
+          ...unkeyed.map((field) => `${f.location} (${name}): ${field.name.value} lacks clientRequestId`),
+        ];
+      }),
+    );
     expect(problems).toEqual([]);
   });
 

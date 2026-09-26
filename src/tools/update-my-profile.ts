@@ -92,7 +92,7 @@ export const updateMyProfile = defineTool({
       fields: changed.map((f) => [`${LABELS[f]} (new)`, input[f]]),
     };
   },
-  async handler(input, { graphql, signal, viewerId, logger }) {
+  async handler(input, { graphql, signal, viewerId, logger, clientRequestId }) {
     const { updateResearcherProfile: p } = await graphql.request(
       UpdateMyProfileDocument,
       {
@@ -101,6 +101,7 @@ export const updateMyProfile = defineTool({
           ...(input.website === undefined ? {} : { website: input.website }),
           ...(input.country === undefined ? {} : { country: input.country }),
         },
+        clientRequestId,
       },
       { signal },
     );
