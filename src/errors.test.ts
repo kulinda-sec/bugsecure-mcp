@@ -39,6 +39,23 @@ describe('describeError, insufficient scope', () => {
     expect(text).not.toContain('Administrators');
   });
 
+  it('does not ask to approve a granted read scope when only the write scope was withheld', () => {
+    const text = describeError(
+      missing(['triage:write', 'profile:read']),
+      'hosted',
+      scopes('profile:read'),
+      scopes('triage:write'),
+    );
+    expect(text).toContain('BugSecure did not grant triage:write');
+    expect(text).not.toContain('and approve:');
+    expect(text).not.toContain('Ask the user to disconnect');
+  });
+
+  it('still requests reauthorization when the API rejects scopes our cached token lists', () => {
+    const text = describeError(missing(['reports:write']), 'local', scopes('reports:write'));
+    expect(text).toContain('login --scopes "reports:write"');
+  });
+
   it('asks only for the scopes that were not withheld, and names the withheld ones', () => {
     const text = describeError(
       missing(['reports:write', 'triage:write']),

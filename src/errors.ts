@@ -128,12 +128,13 @@ const hint = (
       // permission. When ANY one of several scopes would do, ask for the first only (the
       // first BugSecure has not withheld, when there is one).
       const any = error.scopeMatch === 'any' && error.requiredScopes.length > 1;
-      const askable = error.requiredScopes.filter((s) => !withheld.has(s));
-      const missing = any
-        ? askable.length > 0
-          ? askable.slice(0, 1)
-          : error.requiredScopes
-        : error.requiredScopes;
+      const absent = error.requiredScopes.filter((s) => !granted.has(s));
+      // If the API rejects scopes our cached token still lists, its answer is
+      // authoritative and reauthorization may be needed. Otherwise exclude
+      // already granted prerequisites from the permissions we ask for.
+      const needed = absent.length === 0 ? error.requiredScopes : absent;
+      const askable = needed.filter((s) => !withheld.has(s));
+      const missing = any ? (askable.length > 0 ? askable.slice(0, 1) : needed) : needed;
       const options = any ? `Any one of ${error.requiredScopes.join(', ')} is enough. ` : '';
       // Approved, then left out by BugSecure: approving them again would not help.
       const notGranted = missing.filter((s) => withheld.has(s));
