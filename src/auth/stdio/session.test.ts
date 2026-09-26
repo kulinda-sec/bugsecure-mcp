@@ -1,13 +1,13 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { fakeAuthorizationServer, ISSUER } from '../../../test/helpers/fake-authorization-server.js';
 import { memoryStore } from '../../../test/helpers/memory-store.js';
-import { BugSecureError } from '../../errors.js';
-import { silentLogger } from '../../logger.js';
+import { BugSecureError, describeError } from '../../errors.js';
+import { createLogger, silentLogger } from '../../logger.js';
 import type { StoredCredentials } from './credential-store.js';
 import { withFileLock } from './file-lock.js';
 import {
@@ -109,6 +109,64 @@ describe('LocalSession', () => {
     expect(as.tokenRequests).toHaveLength(1);
   });
 
+  it('returns stored rotated credentials and warns when the lock cannot be released', async () => {
+    const dir = tmpLockDir();
+    const path = credentialsLockPath(dir);
+    const store = memoryStore([stored({ accessTokenExpiresAt: NOW })]);
+    const as = fakeAuthorizationServer();
+    as.tokenResponses = [
+      {
+        status: 200,
+        body: {
+          access_token: 'at-new',
+          token_type: 'Bearer',
+          expires_in: 600,
+          refresh_token: 'rt-new',
+        },
+      },
+    ];
+    const logs: string[] = [];
+    const s = new LocalSession({
+      issuer: ISSUER,
+      resource: ISSUER,
+      lockDir: dir,
+      store: {
+        ...store,
+        save: async (credentials) => {
+          await store.save(credentials);
+          // Another process crashed holding the guard while the refresh was running.
+          writeFileSync(`${path}.break`, 'abandoned-guard\n');
+          const old = new Date(Date.now() - 60_000);
+          utimesSync(`${path}.break`, old, old);
+        },
+      },
+      logger: createLogger({
+        level: 'warn',
+        write: (line) => {
+          logs.push(line);
+        },
+      }),
+      fetch: as.fetch,
+      now: () => NOW * 1000,
+    });
+
+    await expect(s.getAccessToken()).resolves.toBe('at-new');
+    expect(await store.load(ISSUER)).toMatchObject({ accessToken: 'at-new', refreshToken: 'rt-new' });
+    expect(logs).toHaveLength(1);
+    expect(JSON.parse(logs[0] ?? '')).toMatchObject({ level: 'warn', path });
+    expect(logs.join('')).not.toContain('rt-new');
+    expect(logs.join('')).not.toContain('at-new');
+
+    // The successful result remains usable. A later refresh names the abandoned guard.
+    await expect(s.getAccessToken()).resolves.toBe('at-new');
+    s.invalidate('at-new');
+    await expect(s.getAccessToken()).rejects.toMatchObject({
+      code: 'CREDENTIALS_BUSY',
+      hint: expect.stringContaining('Stop all bugsecure-mcp processes') as string,
+    });
+    expect(as.tokenRequests).toHaveLength(1);
+  });
+
   it('adopts tokens another process refreshed while it waited for the lock', async () => {
     const store = memoryStore([stored({ accessTokenExpiresAt: NOW })]);
     const { s, as } = session(store);
@@ -198,6 +256,40 @@ describe('LocalSession', () => {
     await holder;
     // Released by its owner: the next caller gets it at once.
     await withFileLock(credentialsLockPath(dir), () => Promise.resolve(), { timeoutMs: 50 });
+  });
+
+  it('preserves manual recovery instructions for an abandoned lock guard', async () => {
+    const dir = tmpLockDir();
+    const guard = `${credentialsLockPath(dir)}.break`;
+    writeFileSync(guard, 'abandoned-guard\n');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(guard, old, old);
+    const error = await withCredentialsLock(dir, () => Promise.resolve(), { staleMs: 1_000 }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(BugSecureError);
+    expect((error as BugSecureError).code).toBe('CREDENTIALS_BUSY');
+    expect((error as BugSecureError).hint).toContain('Stop all bugsecure-mcp processes');
+    expect((error as BugSecureError).hint).toContain(guard);
+  });
+
+  it.each(['', '.break'])('surfaces the stale-owner recovery hint for credentials.lock%s', async (suffix) => {
+    // Simulate a PID reused by an unrelated long-lived process after a reboot.
+    const pid = process.pid + 1;
+    vi.spyOn(process, 'kill').mockReturnValue(true);
+    const dir = tmpLockDir();
+    const path = `${credentialsLockPath(dir)}${suffix}`;
+    writeFileSync(path, `${String(pid)}:old-owner\n`);
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(path, old, old);
+    const error = await withCredentialsLock(dir, () => Promise.resolve()).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(BugSecureError);
+    const text = describeError(error as BugSecureError, 'local');
+    expect(text).toContain(path);
+    expect(text).toContain(`PID ${String(pid)}`);
+    expect(text).toContain('Stop all bugsecure-mcp processes');
+    expect(text).not.toContain('Retry in a few seconds');
   });
 });
 

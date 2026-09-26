@@ -15,6 +15,7 @@
 import type { LocalConfig } from '../../config.js';
 import { createPkcePair, randomToken } from '../../crypto.js';
 import type { FetchFn } from '../../http.js';
+import { createLogger } from '../../logger.js';
 import { formatScopes, type Scope } from '../../scopes.js';
 import { discoverAuthorizationServer, OAuthRequestError, requestToken } from '../oauth.js';
 import type { CredentialStore, StoredCredentials } from './credential-store.js';
@@ -130,6 +131,8 @@ export const login = async (options: LoginOptions): Promise<StoredCredentials> =
   };
   // Under the lock: a refresh in another process can then neither interleave
   // with this save nor overwrite it afterwards (it re-reads under the lock).
-  await withCredentialsLock(options.lockDir, () => options.store.save(credentials));
+  await withCredentialsLock(options.lockDir, () => options.store.save(credentials), {
+    logger: createLogger({ level: options.config.logLevel }),
+  });
   return credentials;
 };

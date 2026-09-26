@@ -15,9 +15,12 @@
  *   presumed dead and had its lock broken cannot delete its successor's lock;
  * - the owner refreshes the file's mtime (a heartbeat) while it works, so a
  *   long but live critical section is never mistaken for an abandoned one;
- * - a lock whose heartbeat stopped for `staleMs` (holder crashed) is broken,
- *   by one waiter at a time, which removes it only if it is still that same
- *   abandoned file and never deletes a live lock (`breakStaleLock`);
+ * - acquisition, release and stale recovery share a short-lived guard, so
+ *   nobody can acquire the path while a stale file is being examined;
+ * - a stale lock is left alone while its owner process is still alive;
+ * - a crash while holding the guard fails closed: it must be removed after
+ *   stopping all clients. Automatically stealing that guard would merely
+ *   move the same recovery race to a second file;
  * - files a crash left beside the lock (`<lock>.stale-…`, moved aside while
  *   being broken) are swept once they are older than `staleMs`;
  * - a file system error while breaking a lock is not waited out: one that
@@ -25,22 +28,52 @@
  *   one that lasts until the timeout is named in the LockTimeoutError.
  */
 import type { BigIntStats } from 'node:fs';
-import { link, mkdir, open, readdir, readFile, rename, rm, stat, utimes } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rename, rm, stat, utimes } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { randomToken } from '../../crypto.js';
+import { createLogger, type Logger } from '../../logger.js';
+
+const defaultLogger = createLogger({ level: 'warn' });
 
 export interface FileLockOptions {
   /** Give up waiting after this long. */
   readonly timeoutMs?: number;
-  /** A lock whose heartbeat is older than this is assumed abandoned and broken. */
+  /** After this age, recover a dead owner's lock or explain why recovery needs a human. */
   readonly staleMs?: number;
   readonly pollMs?: number;
+  /** Reports cleanup failures without replacing the protected operation's result. */
+  readonly logger?: Logger;
 }
 
 export class LockTimeoutError extends Error {
   override readonly name = 'LockTimeoutError';
+  readonly hint: string | undefined;
+
+  constructor(message: string, options: ErrorOptions & { readonly hint?: string } = {}) {
+    super(message, options);
+    this.hint = options.hint;
+  }
+}
+
+export class AbandonedLockGuardError extends LockTimeoutError {
+  constructor(path: string) {
+    super(`The credentials lock guard at ${path} is stale.`, {
+      hint: `Stop all bugsecure-mcp processes, then remove the lock guard at ${path} and restart the clients. Do not remove it while any client is running.`,
+    });
+  }
+}
+
+export class StaleLockOwnerError extends LockTimeoutError {
+  constructor(path: string, pid: number) {
+    super(
+      `The stale credentials lock at ${path} names PID ${String(pid)}, which is still alive or cannot be checked.`,
+      {
+        hint: `Stop all bugsecure-mcp processes, then verify that PID ${String(pid)} is not a bugsecure-mcp process before removing ${path} and restarting the clients. The PID may have been reused. Do not remove the file while any client is running.`,
+      },
+    );
+  }
 }
 
 const readOwner = async (path: string): Promise<string | undefined> => {
@@ -68,6 +101,19 @@ const tryAcquire = async (path: string, owner: string): Promise<boolean> => {
 
 const errno = (error: unknown): string | undefined => (error as NodeJS.ErrnoException).code;
 
+/** A paused process can resume with a rotating refresh token: never steal its lock. */
+const liveOwnerPid = (owner: string | undefined): number | undefined => {
+  const pid = Number(/^(\d+)(?::|$)/.exec(owner ?? '')?.[1]);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  try {
+    process.kill(pid, 0);
+    return pid;
+  } catch (error) {
+    // Permission denied or an unknown error is not proof that the process died.
+    return errno(error) === 'ESRCH' ? undefined : pid;
+  }
+};
+
 /** Same file, untouched since: same inode on the same device, same modification time. */
 const sameLockFile = (a: BigIntStats, b: BigIntStats): boolean =>
   a.dev === b.dev && a.ino === b.ino && a.mtimeNs === b.mtimeNs;
@@ -75,8 +121,36 @@ const sameLockFile = (a: BigIntStats, b: BigIntStats): boolean =>
 const statOf = async (path: string): Promise<BigIntStats | undefined> => {
   try {
     return await stat(path, { bigint: true });
-  } catch {
+  } catch (error) {
+    if (errno(error) === 'ENOENT') return undefined;
+    throw error;
+  }
+};
+
+/**
+ * Shared by every acquisition, release and stale recovery. Never steal this
+ * guard: a checked-then-removed guard can be replaced between the two calls.
+ */
+const tryGuarded = async <T>(path: string, staleMs: number, fn: () => Promise<T>): Promise<T | undefined> => {
+  const guard = `${path}.break`;
+  if (!(await tryAcquire(guard, `${String(process.pid)}:${randomToken(16)}`))) {
+    const held = await statOf(guard);
+    if (held !== undefined && Date.now() - Number(held.mtimeMs) > staleMs) {
+      const owner = await readOwner(guard);
+      const current = await statOf(guard);
+      if (current !== undefined && sameLockFile(current, held)) {
+        const pid = liveOwnerPid(owner);
+        if (pid !== undefined) throw new StaleLockOwnerError(guard, pid);
+        throw new AbandonedLockGuardError(guard);
+      }
+    }
     return undefined;
+  }
+  try {
+    return await fn();
+  } finally {
+    // No other process removes or replaces an owned guard.
+    await rm(guard, { force: true });
   }
 };
 
@@ -85,13 +159,8 @@ const statOf = async (path: string): Promise<BigIntStats | undefined> => {
  * was moved turns out not to be that file, put it back. Never deletes a lock
  * that is not the one judged stale.
  *
- * `rename` is atomic, so what is examined is exactly what was taken from the
- * lock path, and nobody else can take it any more. A live lock moved by
- * mistake (its owner heartbeat after all, or released and a new holder took
- * the lock in between) is put back with `link`, which fails rather than
- * replace a lock someone took in the instant it was away. Only in that
- * instant can two holders overlap; the moved-away owner then finds another
- * owner's token at release and leaves it alone.
+ * Called only under the shared guard: nobody can acquire or release the
+ * path until the moved file has been checked and, if necessary, restored.
  */
 const removeIfStill = async (path: string, judged: BigIntStats): Promise<boolean> => {
   const aside = `${path}${STALE_SUFFIX}${String(process.pid)}-${randomToken(9)}`;
@@ -108,17 +177,7 @@ const removeIfStill = async (path: string, judged: BigIntStats): Promise<boolean
     await rm(aside, { force: true });
     return true;
   }
-  try {
-    await link(aside, path);
-  } catch (error) {
-    if (errno(error) !== 'EEXIST') {
-      // No hard links on this file system: move it back. Unlike `link`, this would replace
-      // a lock taken in the instant it was away: the same, rare overlap as above.
-      await rename(aside, path);
-      return false;
-    }
-  }
-  await rm(aside, { force: true });
+  await rename(aside, path);
   return false;
 };
 
@@ -149,7 +208,7 @@ export const sweepStaleAside = async (path: string, staleMs: number, now = Date.
   }
   for (const name of names.filter((n) => leftover.test(n))) {
     const file = join(dir, name);
-    const info = await statOf(file);
+    const info = await statOf(file).catch(() => undefined);
     if (info === undefined) continue;
     const changed = Math.max(Number(info.mtimeMs), Number(info.ctimeMs));
     if (now - changed > staleMs) await rm(file, { force: true }).catch(() => undefined);
@@ -172,17 +231,9 @@ const isTransient = (error: unknown): boolean => {
  * stale). Resolves `true` when the lock path may now be free (try to acquire
  * at once), `false` when it should be left alone for now.
  *
- * Several waiters often judge the same abandoned lock stale together. With a
- * plain check-then-delete, a slow one would delete the lock a faster one had
- * already broken and re-acquired. So breaking is itself serialised, by a
- * short-lived second lock (`<path>.break`, O_EXCL like the lock): its holder
- * checks again that the lock file is still the one judged stale (same inode,
- * device and mtime: no heartbeat, no new holder) and only then removes it
- * (`removeIfStill`). Waiters that find a break in progress wait and look again.
- * A breaker lock left by a crashed breaker is removed once it is older than
- * `staleMs`, with the same identity-checked removal (`removeIfStill`); it is
- * held for a few file system calls, so that takes a crash in exactly that
- * moment.
+ * The same guard protects acquisitions, so the temporary absence of the
+ * lock during `removeIfStill` cannot admit a second owner. A live owner is
+ * never broken merely because its heartbeat was delayed.
  *
  * Exported for tests.
  */
@@ -191,24 +242,34 @@ export const breakStaleLock = async (
   judged: BigIntStats,
   staleMs: number,
 ): Promise<boolean> => {
-  const breaker = `${path}.break`;
-  const token = `${String(process.pid)}:${randomToken(16)}`;
-  if (!(await tryAcquire(breaker, token))) {
-    const held = await statOf(breaker);
-    // A breaker lock abandoned by a crash: removed exactly like the lock itself, so a
-    // breaker that just took it afresh (a new file, or a new mtime) is never deleted.
-    if (held !== undefined && Date.now() - Number(held.mtimeMs) > staleMs) {
-      await removeIfStill(breaker, held);
-    }
-    return false;
-  }
-  try {
-    const current = await statOf(path);
-    if (current === undefined) return true;
-    if (!sameLockFile(current, judged)) return false; // a heartbeat, or a new holder: not stale
-    return await removeIfStill(path, judged);
-  } finally {
-    if ((await readOwner(breaker)) === token) await rm(breaker, { force: true });
+  return (
+    (await tryGuarded(path, staleMs, async () => {
+      const current = await statOf(path);
+      if (current === undefined) return true;
+      if (!sameLockFile(current, judged)) return false; // a heartbeat, or a new holder: not stale
+      const pid = liveOwnerPid(await readOwner(path));
+      if (pid !== undefined) throw new StaleLockOwnerError(path, pid);
+      return await removeIfStill(path, judged);
+    })) ?? false
+  );
+};
+
+const releaseLock = async (
+  path: string,
+  owner: string,
+  staleMs: number,
+  timeoutMs: number,
+  pollMs: number,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (
+    !(await tryGuarded(path, staleMs, async () => {
+      if ((await readOwner(path)) === owner) await rm(path, { force: true });
+      return true;
+    }))
+  ) {
+    if (Date.now() >= deadline) throw new LockTimeoutError(`Timed out releasing ${path}`);
+    await sleep(pollMs);
   }
 };
 
@@ -226,14 +287,9 @@ export const withFileLock = async <T>(
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   /** The last transient error breaking a stale lock, named if it lasts until the timeout. */
   let breakError: unknown;
-  while (!(await tryAcquire(path, owner))) {
-    let judged: BigIntStats;
-    try {
-      judged = await stat(path, { bigint: true });
-    } catch {
-      continue; // vanished between open and stat: retry immediately
-    }
-    if (Date.now() - Number(judged.mtimeMs) > staleMs) {
+  while (!(await tryGuarded(path, staleMs, () => tryAcquire(path, owner)))) {
+    const judged = await statOf(path);
+    if (judged !== undefined && Date.now() - Number(judged.mtimeMs) > staleMs) {
       let free = false;
       try {
         free = await breakStaleLock(path, judged, staleMs);
@@ -254,9 +310,6 @@ export const withFileLock = async <T>(
     }
     await sleep(pollMs);
   }
-  // Holding a fresh lock (nobody judges it stale): a good moment to clear what crashes left.
-  await sweepStaleAside(path, staleMs);
-
   // Heartbeat: keep the lock visibly alive while fn() runs.
   const heartbeat = setInterval(
     () => {
@@ -267,10 +320,28 @@ export const withFileLock = async <T>(
   );
   heartbeat.unref();
   try {
+    await sweepStaleAside(path, staleMs);
     return await fn();
   } finally {
     clearInterval(heartbeat);
-    // Release only our own lock.
-    if ((await readOwner(path)) === owner) await rm(path, { force: true });
+    try {
+      await releaseLock(path, owner, staleMs, timeoutMs, pollMs);
+    } catch (error) {
+      // The operation may have already rotated and stored credentials. Cleanup
+      // must neither turn that success into a failure nor hide its original error.
+      // A remaining lock stays excluded while this process lives; subsequent
+      // acquisitions explain recovery once it or its guard is stale.
+      try {
+        (options.logger ?? defaultLogger).warn(
+          'credentials lock release failed; operation outcome preserved',
+          {
+            path,
+            error,
+          },
+        );
+      } catch {
+        // A failed diagnostic sink must not replace the operation's outcome either.
+      }
+    }
   }
 };

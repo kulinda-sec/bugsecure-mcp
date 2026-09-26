@@ -373,6 +373,18 @@ and platform administration), and a test keeps it that way.
     the whole grant — cannot happen by accident. An access token the API
     rejects is refreshed and the call retried once. `logout` revokes the grant
     (RFC 7009).
+    A stale lock is never stolen from a process that is still alive or whose
+    liveness cannot be checked. A reused PID can keep an abandoned lock in
+    this state; the error names the file and PID and gives manual recovery
+    steps. If a process crashes while changing the lock itself, its short-lived
+    `credentials.lock.break` guard is left in place for safety. The error
+    gives its path: stop all bugsecure-mcp processes before removing that
+    guard, then restart the clients. Ordinary crashes during a refresh still
+    recover automatically once the credentials lock is stale and its owner
+    PID is gone. A failure to release the lock is logged without replacing
+    the operation's result or original error. A lock left behind remains
+    excluded while its owner process lives; subsequent attempts explain
+    recovery once it or its guard is stale.
   - _Hosted:_ the server is an OAuth 2.1 protected resource. It publishes RFC 9728
     metadata, answers `401` with `WWW-Authenticate: Bearer resource_metadata="…"`,
     and `403 insufficient_scope` for step-up. Inbound JWTs are verified locally

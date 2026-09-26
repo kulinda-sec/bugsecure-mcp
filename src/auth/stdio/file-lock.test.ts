@@ -9,6 +9,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   statSync,
   utimesSync,
   writeFileSync,
@@ -17,11 +18,31 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { breakStaleLock, LockTimeoutError, sweepStaleAside, withFileLock } from './file-lock.js';
+import { silentLogger } from '../../logger.js';
+
+import {
+  AbandonedLockGuardError,
+  breakStaleLock,
+  LockTimeoutError,
+  StaleLockOwnerError,
+  sweepStaleAside,
+  withFileLock,
+} from './file-lock.js';
 
 const lockPath = (): string => join(mkdtempSync(join(tmpdir(), 'bsmcp-flock-')), 'x.lock');
+const FIXTURE_PID = process.pid + 1;
+
+beforeEach(() => {
+  // Only this test's current process is alive unless a case says otherwise.
+  // Never query a real host PID for a synthetic crashed owner.
+  vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+    expect(signal).toBe(0);
+    if (pid === process.pid) return true;
+    throw Object.assign(new Error('No such process'), { code: 'ESRCH' });
+  });
+});
 
 /**
  * A lock file's identity (device, inode, mtime): what `breakStaleLock` compares.
@@ -65,7 +86,7 @@ describe('withFileLock', () => {
 
   it('breaks a stale lock left by a crashed process', async () => {
     const path = lockPath();
-    writeFileSync(path, '99999\n');
+    writeFileSync(path, `${String(FIXTURE_PID)}\n`);
     const old = new Date(Date.now() - 60_000);
     utimesSync(path, old, old);
     await expect(withFileLock(path, () => Promise.resolve('ok'), { staleMs: 1_000 })).resolves.toBe('ok');
@@ -73,7 +94,7 @@ describe('withFileLock', () => {
 
   it('lets exactly one of several waiters break a stale lock, and never runs two sections at once', async () => {
     const path = lockPath();
-    writeFileSync(path, '99999:crashed\n');
+    writeFileSync(path, `${String(FIXTURE_PID)}:crashed\n`);
     const old = new Date(Date.now() - 60_000);
     utimesSync(path, old, old);
     let active = 0;
@@ -102,7 +123,7 @@ describe('withFileLock', () => {
 
   it('deletes the stale lock it judged, and nothing else', async () => {
     const path = lockPath();
-    writeFileSync(path, '99999:crashed\n');
+    writeFileSync(path, `${String(FIXTURE_PID)}:crashed\n`);
     const judged = identityOf(path);
     await expect(breakStaleLock(path, judged, 1_000)).resolves.toBe(true);
     expect(readdirSync(dirname(path))).toEqual([]);
@@ -112,7 +133,7 @@ describe('withFileLock', () => {
 
   it('leaves alone a live lock that replaced the stale one after it was judged', async () => {
     const path = lockPath();
-    writeFileSync(path, '99999:crashed\n');
+    writeFileSync(path, `${String(FIXTURE_PID)}:crashed\n`);
     const judged = identityOf(path);
     // Meanwhile a faster waiter broke the stale lock and took the lock: a new file, a live owner.
     renameSync(path, `${path}.gone`);
@@ -142,9 +163,9 @@ describe('withFileLock', () => {
     expect(readdirSync(dirname(path))).toEqual(['x.lock']);
   });
 
-  it('waits while another waiter is breaking the lock, and clears a breaker lock left by a crash', async () => {
+  it('waits for an active guard and fails closed for an abandoned guard', async () => {
     const path = lockPath();
-    writeFileSync(path, '99999:crashed\n');
+    writeFileSync(path, `${String(FIXTURE_PID)}:crashed\n`);
     const judged = identityOf(path);
     writeFileSync(`${path}.break`, 'breaking\n');
 
@@ -153,10 +174,149 @@ describe('withFileLock', () => {
 
     const old = new Date(Date.now() - 60_000);
     utimesSync(`${path}.break`, old, old); // that breaker crashed
-    await expect(breakStaleLock(path, judged, 1_000)).resolves.toBe(false);
-    expect(existsSync(`${path}.break`)).toBe(false);
+    await expect(breakStaleLock(path, judged, 1_000)).rejects.toBeInstanceOf(AbandonedLockGuardError);
+    expect(readFileSync(`${path}.break`, 'utf8')).toBe('breaking\n');
+    await expect(withFileLock(path, () => Promise.resolve(), { staleMs: 1_000 })).rejects.toMatchObject({
+      hint: expect.stringContaining('Stop all bugsecure-mcp processes') as string,
+    });
+    // Simulate the documented manual recovery after stopping every client.
+    rmSync(`${path}.break`);
     await expect(breakStaleLock(path, judged, 1_000)).resolves.toBe(true);
     expect(readdirSync(dirname(path))).toEqual([]);
+  });
+
+  it('never steals an expired lock from a live process, even before its next heartbeat', async () => {
+    const path = lockPath();
+    writeFileSync(path, `${String(process.pid)}:paused-owner\n`);
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(path, old, old);
+    const judged = identityOf(path);
+
+    await expect(breakStaleLock(path, judged, 1_000)).rejects.toBeInstanceOf(StaleLockOwnerError);
+    await expect(
+      withFileLock(path, () => Promise.resolve(), {
+        staleMs: 1_000,
+        timeoutMs: 40,
+        pollMs: 5,
+      }),
+    ).rejects.toBeInstanceOf(StaleLockOwnerError);
+    expect(readFileSync(path, 'utf8')).toBe(`${String(process.pid)}:paused-owner\n`);
+  });
+
+  it('does not treat a live guard owner as abandoned when its timestamp is old', async () => {
+    const path = lockPath();
+    writeFileSync(`${path}.break`, `${String(process.pid)}:paused-guard\n`);
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${path}.break`, old, old);
+    const error = await withFileLock(path, () => Promise.resolve(), {
+      staleMs: 1_000,
+      timeoutMs: 40,
+      pollMs: 5,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(StaleLockOwnerError);
+    expect(error).not.toBeInstanceOf(AbandonedLockGuardError);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it.each([
+    ['', 'alive'],
+    ['', 'EPERM'],
+    ['', 'EIO'],
+    ['.break', 'alive'],
+    ['.break', 'EPERM'],
+    ['.break', 'EIO'],
+  ])('explains a stale lock%s with a reused or uncertain PID (%s)', async (suffix, state) => {
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      if (state === 'alive') return true;
+      throw Object.assign(new Error('Cannot inspect process'), { code: state });
+    });
+    const path = lockPath();
+    const blocked = `${path}${suffix}`;
+    const owner = `${String(FIXTURE_PID)}:previous-process\n`;
+    writeFileSync(blocked, owner);
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(blocked, old, old);
+    const work = vi.fn(() => Promise.resolve());
+
+    const error = await withFileLock(path, work, { staleMs: 1_000 }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(StaleLockOwnerError);
+    expect((error as StaleLockOwnerError).message).toContain(blocked);
+    expect((error as StaleLockOwnerError).message).toContain(String(FIXTURE_PID));
+    expect((error as StaleLockOwnerError).hint).toContain('Stop all bugsecure-mcp processes');
+    expect((error as StaleLockOwnerError).hint).toContain('PID may have been reused');
+    expect(readFileSync(blocked, 'utf8')).toBe(owner);
+    expect(work).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'preserves successful work when release fails (abandoned guard: %s)',
+    async (abandoned) => {
+      const path = lockPath();
+      const guard = `${path}.break`;
+      const warn = vi.fn();
+      const result = { stored: true };
+
+      await expect(
+        withFileLock(
+          path,
+          () => {
+            writeFileSync(guard, abandoned ? 'abandoned' : `${String(process.pid)}:busy`);
+            if (abandoned) {
+              const old = new Date(Date.now() - 60_000);
+              utimesSync(guard, old, old);
+            }
+            return Promise.resolve(result);
+          },
+          { timeoutMs: 20, pollMs: 5, logger: { ...silentLogger, warn } },
+        ),
+      ).resolves.toBe(result);
+
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        'credentials lock release failed; operation outcome preserved',
+        { path, error: expect.any(LockTimeoutError) as unknown },
+      );
+      expect(existsSync(path)).toBe(true);
+      if (abandoned) {
+        await expect(withFileLock(path, () => Promise.resolve())).rejects.toBeInstanceOf(
+          AbandonedLockGuardError,
+        );
+      } else {
+        // The other process finishes using the guard, but our unreleased main lock
+        // stays excluded while its PID is alive. Age alone must not steal it.
+        rmSync(guard);
+        const old = new Date(Date.now() - 60_000);
+        utimesSync(path, old, old);
+        await expect(withFileLock(path, () => Promise.resolve())).rejects.toBeInstanceOf(StaleLockOwnerError);
+        // Once the owner exits, normal stale-lock recovery is safe again.
+        vi.spyOn(process, 'kill').mockImplementation(() => {
+          throw Object.assign(new Error('No such process'), { code: 'ESRCH' });
+        });
+        await expect(withFileLock(path, () => Promise.resolve('recovered'))).resolves.toBe('recovered');
+      }
+    },
+  );
+
+  it('preserves the original work error when release also fails', async () => {
+    const path = lockPath();
+    const original = new Error('work failed');
+    const warn = vi.fn();
+    await expect(
+      withFileLock(
+        path,
+        () => {
+          writeFileSync(`${path}.break`, 'abandoned');
+          const old = new Date(Date.now() - 60_000);
+          utimesSync(`${path}.break`, old, old);
+          return Promise.reject(original);
+        },
+        { logger: { ...silentLogger, warn } },
+      ),
+    ).rejects.toBe(original);
+    expect(warn).toHaveBeenCalledWith(expect.any(String), {
+      path,
+      error: expect.any(AbandonedLockGuardError) as unknown,
+    });
   });
 
   it('times out on a live lock', async () => {
@@ -241,7 +401,7 @@ describe('withFileLock', () => {
     'throws a permission error breaking a stale lock at once, instead of waiting out the timeout',
     async () => {
       const path = lockPath();
-      writeFileSync(path, '99999:crashed\n');
+      writeFileSync(path, `${String(FIXTURE_PID)}:crashed\n`);
       const old = new Date(Date.now() - 60_000);
       utimesSync(path, old, old);
       chmodSync(dirname(path), 0o500); // cannot create the breaker lock, nor move the lock
