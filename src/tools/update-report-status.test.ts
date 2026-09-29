@@ -4,8 +4,8 @@ import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/hel
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
 
-/** triage:write, plus profile:read for the staff check. */
-const TRIAGER = ['triage:write', 'profile:read'] as const;
+/** triage:write, plus profile:read for the staff check and triage:read for the report check. */
+const TRIAGER = ['triage:write', 'profile:read', 'triage:read'] as const;
 
 const updated = (status: string, duplicateOfId: string | null = null) => ({
   updateReportStatus: { id: 'r1', status, duplicateOfId, updatedAt: '2026-09-21T10:00:00.000Z' },
@@ -152,7 +152,7 @@ describe('update_report_status', () => {
     ).toContain('AI triage access');
     expect(
       textOf(await harness.call('update_report_status', { reportId: 'r2', status: 'IN_TRIAGE' })),
-    ).toContain('login --scopes "profile:read triage:write"');
+    ).toContain('login --scopes "profile:read triage:read triage:write"');
   });
 
   it('is announced as destructive', async () => {

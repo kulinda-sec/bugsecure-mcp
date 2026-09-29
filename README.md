@@ -217,10 +217,10 @@ it. Write tools are hidden entirely in read-only mode.
 | `get_program_stats`       | `triage:read`         |      –       | A programme's report counts and time to resolution                                                                                              |
 | `check_duplicates`        | `triage:read`         |      –       | Possible duplicates of a finding among a programme's reports                                                                                    |
 | `list_org_certificates`   | `triage:read`         |      –       | The payout certificates an organization owes (never settlement details); needs `profile:read`                                                   |
-| `update_report_status`    | `triage:write`        |      ✅      | Move a report through triage (some statuses are final); also needs `profile:read`                                                               |
+| `update_report_status`    | `triage:write`        |      ✅      | Move a report through triage (some statuses are final); also needs `profile:read` and `triage:read`                                             |
 | `add_triage_comment`      | `triage:write`        |      ✅      | Add an organization-only note (default), or a comment the researcher sees; needs `profile:read`                                                 |
-| `assign_report`           | `triage:write`        |      ✅      | Assign a report to yourself (assigning someone else stays on the website); needs `profile:read`                                                 |
-| `grade_report`            | `grade:write`         |      ✅      | Grade a report as your organization: binding, issues a certificate you owe; needs `profile:read`                                                |
+| `assign_report`           | `triage:write`        |      ✅      | Assign a report to yourself (assigning someone else stays on the website); needs `profile:read` and `triage:read`                               |
+| `grade_report`            | `grade:write`         |      ✅      | Grade a report as your organization: binding, issues a certificate you owe; needs `profile:read` and `triage:read`                              |
 
 Attachments (a report submitted here cannot carry any: submit on the website
 if you need files, and open them there), accepting the platform and programme

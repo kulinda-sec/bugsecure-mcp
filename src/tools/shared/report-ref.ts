@@ -8,6 +8,7 @@ import { BugSecureError } from '../../errors.js';
 import type { GetReportRefQuery } from '../../graphql/generated.js';
 import type { ApprovalPrompt } from '../approval.js';
 import type { ToolContext } from '../define-tool.js';
+import { assertNotOwnReport } from './report.js';
 
 export type ReportRef = NonNullable<GetReportRefQuery['report']>;
 
@@ -74,4 +75,31 @@ export const requireSideKnown = (report: ReportRef | undefined, bothSides: boole
       },
     );
   }
+};
+
+/**
+ * The report an organisation-side write changes (its status, its grade, who
+ * triages it), read and checked before anything is asked or sent: submitted
+ * to one of the caller's organisations, not filed by the caller. A report
+ * that cannot be read is refused rather than written blind, because then
+ * neither check can run (report e6629484). The API refuses a member acting on
+ * their own report anyway; this keeps the client from asking for, or sending,
+ * a write whose side it could not check.
+ *
+ * Called from the tool's approval AND its handler, as the staff check is.
+ */
+export const orgSideReport = async (
+  context: Pick<ToolContext, 'granted' | 'signal' | 'viewerId'>,
+  fetch: () => Promise<GetReportRefQuery>,
+): Promise<ReportRef> => {
+  const { report, notes } = await lookupReport(context, fetch);
+  if (report === undefined) {
+    throw new BugSecureError(
+      'FORBIDDEN',
+      `Nothing was sent: the report could not be read to check it was submitted to your organisation. ${notes.join(' ')}`,
+      { hint: 'Check the id with list_org_reports, then try again.' },
+    );
+  }
+  assertNotOwnReport(report.reporter.id, context.viewerId);
+  return report;
 };

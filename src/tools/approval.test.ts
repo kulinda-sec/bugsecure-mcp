@@ -13,6 +13,7 @@ import { REPORTER_ID } from '../../test/helpers/report-fixtures.js';
 import {
   LOOKED_UP,
   ORG_SIDE_WRITE_TOOLS,
+  REPORT_CHANGING_ORG_TOOLS,
   SAMPLE_ARGS,
   WRITE_OPERATION,
 } from '../../test/helpers/sample-args.js';
@@ -153,8 +154,8 @@ describe('every write tool', () => {
     expect(message).toContain(`${VALUE_PREFIX}${LOOKED_UP[name] ?? 'Stored XSS in profile'}`);
   });
 
-  it.each(WRITE_TOOLS)('%s still asks, showing ids only, when the lookups fail', async (name) => {
-    const failing = Object.fromEntries(
+  const failingLookups = (): Record<string, () => never> =>
+    Object.fromEntries(
       [
         'GetReportRef',
         'GetProgramRef',
@@ -169,20 +170,40 @@ describe('every write tool', () => {
         },
       ]),
     );
-    const graphql = fakeGraphQL({ ...API, ...failing });
-    harness = await connectTools({
-      graphql,
-      viewerId: viewerFor(name),
-      // One side's write scope only, so the side is never ambiguous without the lookup.
-      grantedScopes: SCOPES.filter((s) =>
-        ORG_SIDE_WRITE_TOOLS.has(name) ? s !== 'reports:write' : s !== 'triage:write',
-      ),
-    });
-    const result = await harness.call(name, SAMPLE_ARGS[name] ?? {});
-    expect(result.isError).toBeFalsy();
-    expect(harness.prompts[0]?.message).toMatch(/Could not look up/);
-    expect(writesIn(graphql)).toEqual([WRITE_OPERATION[name]]);
-  });
+
+  it.each(WRITE_TOOLS.filter((n) => !REPORT_CHANGING_ORG_TOOLS.has(n)))(
+    '%s still asks, showing ids only, when the lookups fail',
+    async (name) => {
+      const graphql = fakeGraphQL({ ...API, ...failingLookups() });
+      harness = await connectTools({
+        graphql,
+        viewerId: viewerFor(name),
+        // One side's write scope only, so the side is never ambiguous without the lookup.
+        grantedScopes: SCOPES.filter((s) =>
+          ORG_SIDE_WRITE_TOOLS.has(name) ? s !== 'reports:write' : s !== 'triage:write',
+        ),
+      });
+      const result = await harness.call(name, SAMPLE_ARGS[name] ?? {});
+      expect(result.isError).toBeFalsy();
+      expect(harness.prompts[0]?.message).toMatch(/Could not look up/);
+      expect(writesIn(graphql)).toEqual([WRITE_OPERATION[name]]);
+    },
+  );
+
+  // Report e6629484: a write that changes an organisation's report is never asked for, or sent, when
+  // the report could not be read to check it is not the caller's own.
+  it.each([...REPORT_CHANGING_ORG_TOOLS])(
+    '%s refuses, asking nothing, when the report cannot be read',
+    async (name) => {
+      const graphql = fakeGraphQL({ ...API, ...failingLookups() });
+      harness = await connectTools({ graphql, viewerId: viewerFor(name) });
+      const result = await harness.call(name, SAMPLE_ARGS[name] ?? {});
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('Nothing was sent: the report could not be read');
+      expect(harness.prompts).toHaveLength(0);
+      expect(writesIn(graphql)).toEqual([]);
+    },
+  );
 
   const refusals: readonly ApprovalAnswer[] = ['decline', 'cancel', 'accept-unticked', 'none'];
   it.each(WRITE_TOOLS.flatMap((n) => refusals.map((a) => [n, a] as const)))(
