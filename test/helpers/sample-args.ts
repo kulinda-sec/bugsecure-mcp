@@ -56,6 +56,16 @@ export const ORG_SIDE_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'grade_report',
 ]);
 
+/**
+ * Organisation-side writes that change a report (its status, its grade, who triages it): refused, not
+ * asked for, when the report cannot be read to check it is not the caller's own (orgSideReport).
+ */
+export const REPORT_CHANGING_ORG_TOOLS: ReadonlySet<string> = new Set([
+  'update_report_status',
+  'assign_report',
+  'grade_report',
+]);
+
 /** The mutation each write tool sends. */
 export const WRITE_OPERATION: Readonly<Record<string, string>> = {
   submit_report: 'SubmitReport',

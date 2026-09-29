@@ -260,6 +260,30 @@ describe('grade_report', () => {
     expect(withoutLookups(graphql.calls)).toEqual([]);
   });
 
+  // Report e6629484: a grade is never asked for, or sent, when the report cannot be read to check whose it is.
+  it('refuses, asking nothing, when the report is not visible to the account', async () => {
+    const graphql = fakeGraphQL({
+      ...lookups(),
+      GetReportRef: () => ({ report: null }),
+      GradeReport: () => ({ adjudicateReport: certificate }),
+    });
+    harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
+    const result = await harness.call('grade_report', ARGS);
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('Nothing was sent: the report could not be read');
+    expect(harness.prompts).toHaveLength(0);
+    expect(withoutLookups(graphql.calls)).toEqual([]);
+  });
+
+  it('checks the report again when the approved grade is sent', async () => {
+    const graphql = fakeGraphQL({ ...lookups(), GradeReport: () => ({ adjudicateReport: certificate }) });
+    harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
+    await harness.call('grade_report', ARGS);
+    const ops = graphql.calls.map((c) => c.operation);
+    expect(ops.lastIndexOf('GetReportRef')).toBeLessThan(ops.indexOf('GradeReport'));
+    expect(ops.filter((o) => o === 'GetReportRef').length).toBeGreaterThanOrEqual(2);
+  });
+
   it('shows the report, programme and researcher, and says the amount comes from the grid', async () => {
     const graphql = fakeGraphQL({ ...lookups(), GradeReport: () => ({ adjudicateReport: certificate }) });
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });

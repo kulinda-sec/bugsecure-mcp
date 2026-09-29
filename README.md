@@ -217,10 +217,10 @@ it. Write tools are hidden entirely in read-only mode.
 | `get_program_stats`       | `triage:read`         |      –       | A programme's report counts and time to resolution                                                                                              |
 | `check_duplicates`        | `triage:read`         |      –       | Possible duplicates of a finding among a programme's reports                                                                                    |
 | `list_org_certificates`   | `triage:read`         |      –       | The payout certificates an organization owes (never settlement details); needs `profile:read`                                                   |
-| `update_report_status`    | `triage:write`        |      ✅      | Move a report through triage (some statuses are final); also needs `profile:read`                                                               |
+| `update_report_status`    | `triage:write`        |      ✅      | Move a report through triage (some statuses are final); also needs `profile:read` and `triage:read`                                             |
 | `add_triage_comment`      | `triage:write`        |      ✅      | Add an organization-only note (default), or a comment the researcher sees; needs `profile:read`                                                 |
-| `assign_report`           | `triage:write`        |      ✅      | Assign a report to yourself (assigning someone else stays on the website); needs `profile:read`                                                 |
-| `grade_report`            | `grade:write`         |      ✅      | Grade a report as your organization: binding, issues a certificate you owe; needs `profile:read`                                                |
+| `assign_report`           | `triage:write`        |      ✅      | Assign a report to yourself (assigning someone else stays on the website); needs `profile:read` and `triage:read`                               |
+| `grade_report`            | `grade:write`         |      ✅      | Grade a report as your organization: binding, issues a certificate you owe; needs `profile:read` and `triage:read`                              |
 
 Attachments (a report submitted here cannot carry any: submit on the website
 if you need files, and open them there), accepting the platform and programme
@@ -242,8 +242,8 @@ Organizations grade their own reports; BugSecure is the neutral third party.
 exactly as an Administrator or Triager does on the website, and needs the
 `grade:write` scope plus the organization's own **AI grading** consent (an
 Administrator of the organization enables it; AI triage access alone is not
-enough — without it the tool says so and nothing is sent). Reading the report
-first uses the triage tools, so you will usually grant `triage:read` too. Treat
+enough — without it the tool says so and nothing is sent). It also needs
+`triage:read`: the report is read before the grade is asked for or sent. Treat
 it as signing: the grade is binding and, where the report's reward grid pays for
 the severity, immediately issues a signed payout certificate your organization
 owes the researcher. It cannot be edited or withdrawn, only appealed (by the

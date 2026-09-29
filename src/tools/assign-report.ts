@@ -1,11 +1,16 @@
 import * as z from 'zod';
 
 import { BugSecureError } from '../errors.js';
-import { AssignReportDocument, GetReportRefDocument, GetViewerRolesDocument } from '../graphql/generated.js';
+import {
+  AssignReportDocument,
+  type GetReportRefQuery,
+  GetReportRefDocument,
+  GetViewerRolesDocument,
+} from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
 import { id, idInput, timestamp } from './shared/common.js';
-import { assertNotOwnReport, UserRefSchema } from './shared/report.js';
-import { lookupReport, reportContext } from './shared/report-ref.js';
+import { UserRefSchema } from './shared/report.js';
+import { orgSideReport, reportContext } from './shared/report-ref.js';
 import { assertNotPlatformStaff } from './shared/viewer.js';
 import { defineTool, type ToolContext } from './define-tool.js';
 
@@ -14,6 +19,11 @@ const notStaff = (context: ToolContext): Promise<void> =>
     const { me } = await context.graphql.request(GetViewerRolesDocument, {}, { signal: context.signal });
     return me.roles;
   });
+
+const readRef =
+  (context: ToolContext, reportId: string): (() => Promise<GetReportRefQuery>) =>
+  () =>
+    context.graphql.request(GetReportRefDocument, { id: reportId }, { signal: context.signal });
 
 /**
  * Only to the signed-in user: a connected app cannot list an organisation's
@@ -35,10 +45,10 @@ export const assignReport = defineTool({
     'Assign a report of an opted-in organisation the user belongs to to the signed-in user, as the ' +
     'organisation’s triager for it, replacing any current assignee. Assigning to someone else is done on the ' +
     'BugSecure website. The researcher is not notified. The user approves it first.',
-  // profile:read: the account's roles are checked (BugSecure staff are refused).
-  requiredScopes: ['triage:write', 'profile:read'],
-  // Reading the report shows its title and current assignee in the approval.
-  optionalScopes: ['triage:read'],
+  // profile:read: the account's roles are checked (BugSecure staff are refused). triage:read: the report
+  // is read first, to check it was submitted to your organisation (orgSideReport) and to show it in the
+  // approval; a report that cannot be read is refused, not written blind.
+  requiredScopes: ['triage:write', 'profile:read', 'triage:read'],
   // Destructive: replaces the current assignee. Idempotent: assigning yourself again changes nothing.
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({ reportId: idInput('Report id (from list_org_reports).') }),
@@ -48,19 +58,15 @@ export const assignReport = defineTool({
   approval: async (input, context) => {
     const me = self(context.viewerId);
     await notStaff(context);
-    const { report, notes } = await lookupReport(context, () =>
-      context.graphql.request(GetReportRefDocument, { id: input.reportId }, { signal: context.signal }),
-    );
-    if (report !== undefined) assertNotOwnReport(report.reporter.id, context.viewerId);
+    const report = await orgSideReport(context, readRef(context, input.reportId));
     return {
       action: `assign report ${input.reportId} to yourself, as your organisation`,
       audience: 'Seen by your organisation. The researcher is not notified.',
       irreversible: false,
       context: [
         ...reportContext(report, { researcher: true }),
-        ['Assigned now', report === undefined ? undefined : (report.assignedTriage?.username ?? '(nobody)')],
+        ['Assigned now', report.assignedTriage?.username ?? '(nobody)'],
       ],
-      notes,
       fields: [
         ['Report', input.reportId],
         ['Assignee', `you (${me})`],
@@ -71,6 +77,7 @@ export const assignReport = defineTool({
     const { graphql, signal, logger, clientRequestId } = context;
     const me = self(context.viewerId);
     await notStaff(context);
+    await orgSideReport(context, readRef(context, input.reportId));
     const { assignTriageAnalyst: r } = await graphql.request(
       AssignReportDocument,
       { reportId: input.reportId, triageUserId: me, clientRequestId },
