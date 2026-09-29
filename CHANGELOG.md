@@ -10,6 +10,12 @@ are generated from the commit history by [cocogitto](https://docs.cocogitto.io)
 longer edited by hand.
 
 - - -
+## [v0.2.1](https://github.com/kulinda-sec/bugsecure-mcp/compare/ec90cabbf26290a80bd3296ee3c38f2bd25809f8..v0.2.1) - 2026-09-29
+#### Bug Fixes
+- (**tools**) refuse organisation report writes whose report cannot be read (#5) - ([ec90cab](https://github.com/kulinda-sec/bugsecure-mcp/commit/ec90cabbf26290a80bd3296ee3c38f2bd25809f8)) - Sipikat, mbaye, Baakey Dow
+
+- - -
+
 ## [v0.2.0](https://github.com/kulinda-sec/bugsecure-mcp/compare/6facb944907e3a2f653d228d6ff6b89f6d0d6b54..v0.2.0) - 2026-09-26
 #### Features
 - (**tools**) idempotency keys on every write, one resend of a lost answer (#4) - ([6facb94](https://github.com/kulinda-sec/bugsecure-mcp/commit/6facb944907e3a2f653d228d6ff6b89f6d0d6b54)) - Baakey Dow
