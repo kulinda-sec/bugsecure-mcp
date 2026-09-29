@@ -242,8 +242,8 @@ Organizations grade their own reports; BugSecure is the neutral third party.
 exactly as an Administrator or Triager does on the website, and needs the
 `grade:write` scope plus the organization's own **AI grading** consent (an
 Administrator of the organization enables it; AI triage access alone is not
-enough — without it the tool says so and nothing is sent). Reading the report
-first uses the triage tools, so you will usually grant `triage:read` too. Treat
+enough — without it the tool says so and nothing is sent). It also needs
+`triage:read`: the report is read before the grade is asked for or sent. Treat
 it as signing: the grade is binding and, where the report's reward grid pays for
 the severity, immediately issues a signed payout certificate your organization
 owes the researcher. It cannot be edited or withdrawn, only appealed (by the
