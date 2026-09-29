@@ -8,7 +8,7 @@ import { BugSecureError } from '../../errors.js';
 import type { GetReportRefQuery } from '../../graphql/generated.js';
 import type { ApprovalPrompt } from '../approval.js';
 import type { ToolContext } from '../define-tool.js';
-import { assertNotOwnReport } from './report.js';
+import { assertNotOwnReport, requireViewerWhenAmbiguous } from './report.js';
 
 export type ReportRef = NonNullable<GetReportRefQuery['report']>;
 
@@ -82,9 +82,14 @@ export const requireSideKnown = (report: ReportRef | undefined, bothSides: boole
  * triages it), read and checked before anything is asked or sent: submitted
  * to one of the caller's organisations, not filed by the caller. A report
  * that cannot be read is refused rather than written blind, because then
- * neither check can run (report e6629484). The API refuses a member acting on
- * their own report anyway; this keeps the client from asking for, or sending,
- * a write whose side it could not check.
+ * neither check can run; so is a caller who cannot be told from the reporter
+ * (unknown user on a token that also reads their own reports). The API
+ * refuses a member acting on their own report anyway; this keeps the client
+ * from asking for, or sending, a write whose side it could not check.
+ *
+ * Unlike `lookupReport`, a refusal by the API (session expired, AI triage
+ * access disabled, rate limit…) is passed on as it is, so the user is told
+ * what to do about it.
  *
  * Called from the tool's approval AND its handler, as the staff check is.
  */
@@ -92,11 +97,22 @@ export const orgSideReport = async (
   context: Pick<ToolContext, 'granted' | 'signal' | 'viewerId'>,
   fetch: () => Promise<GetReportRefQuery>,
 ): Promise<ReportRef> => {
-  const { report, notes } = await lookupReport(context, fetch);
-  if (report === undefined) {
+  requireViewerWhenAmbiguous(context.viewerId, context.granted.has('reports:read'));
+  let report: GetReportRefQuery['report'];
+  try {
+    ({ report } = await fetch());
+  } catch (error) {
+    if (context.signal.aborted || error instanceof BugSecureError) throw error;
     throw new BugSecureError(
-      'FORBIDDEN',
-      `Nothing was sent: the report could not be read to check it was submitted to your organisation. ${notes.join(' ')}`,
+      'UPSTREAM_ERROR',
+      'Nothing was sent: the report could not be read to check it was submitted to your organisation.',
+      { hint: 'Try again shortly.', cause: error },
+    );
+  }
+  if (report === null) {
+    throw new BugSecureError(
+      'NOT_FOUND',
+      'Nothing was sent: the report could not be read to check it was submitted to your organisation. It is not visible to your account.',
       { hint: 'Check the id with list_org_reports, then try again.' },
     );
   }

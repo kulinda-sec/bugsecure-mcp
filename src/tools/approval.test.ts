@@ -25,6 +25,7 @@ import {
   type Harness,
   textOf,
 } from '../../test/helpers/tool-harness.js';
+import { BugSecureError } from '../errors.js';
 import { silentLogger } from '../logger.js';
 import { SCOPES } from '../scopes.js';
 import { buildServer } from '../server.js';
@@ -200,6 +201,62 @@ describe('every write tool', () => {
       const result = await harness.call(name, SAMPLE_ARGS[name] ?? {});
       expect(result.isError).toBe(true);
       expect(textOf(result)).toContain('Nothing was sent: the report could not be read');
+      expect(harness.prompts).toHaveLength(0);
+      expect(writesIn(graphql)).toEqual([]);
+    },
+  );
+
+  it.each([...REPORT_CHANGING_ORG_TOOLS])(
+    '%s sends nothing when the report can no longer be read once approved',
+    async (name) => {
+      let reads = 0;
+      const graphql = fakeGraphQL({
+        ...API,
+        GetReportRef: (v) => {
+          reads += 1;
+          return reads === 1 ? lookups().GetReportRef?.(v) : { report: null };
+        },
+      });
+      harness = await connectTools({ graphql, viewerId: viewerFor(name) });
+      const result = await harness.call(name, SAMPLE_ARGS[name] ?? {});
+      expect(harness.prompts).toHaveLength(1);
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('Nothing was sent: the report could not be read');
+      expect(writesIn(graphql)).toEqual([]);
+    },
+  );
+
+  it.each([...REPORT_CHANGING_ORG_TOOLS])(
+    '%s refuses, asking nothing, when the signed-in user is unknown and their own reports are readable',
+    async (name) => {
+      const graphql = fakeGraphQL(API);
+      harness = await connectTools({ graphql, viewerId: null });
+      const result = await harness.call(name, SAMPLE_ARGS[name] ?? {});
+      expect(result.isError).toBe(true);
+      // assign_report refuses earlier still: it cannot name the assignee.
+      expect(textOf(result)).toMatch(/Cannot tell (who you are|which reports are your own)/);
+      expect(harness.prompts).toHaveLength(0);
+      expect(graphql.calls.map((c) => c.operation)).not.toContain('GetReportRef');
+      expect(writesIn(graphql)).toEqual([]);
+    },
+  );
+
+  it.each([...REPORT_CHANGING_ORG_TOOLS])(
+    '%s passes on why the API refused to show the report',
+    async (name) => {
+      const graphql = fakeGraphQL({
+        ...API,
+        GetReportRef: () => {
+          throw new BugSecureError(
+            'ORG_AI_ACCESS_DISABLED',
+            'This organization has not enabled AI triage access.',
+          );
+        },
+      });
+      harness = await connectTools({ graphql, viewerId: viewerFor(name) });
+      const result = await harness.call(name, SAMPLE_ARGS[name] ?? {});
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('AI triage access');
       expect(harness.prompts).toHaveLength(0);
       expect(writesIn(graphql)).toEqual([]);
     },
