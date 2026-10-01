@@ -494,6 +494,16 @@ once authenticated. Put it behind a reverse proxy or WAF that rate limits per
 client IP (and caps connections), so unauthenticated traffic cannot spend its
 CPU on signature checks.
 
+## Community
+
+- Questions and ideas: `#mcp-dev` on the
+  [BugSecure Discord](https://discord.gg/2gg6QnDtu).
+- Contributions are welcome: start with a
+  [good first issue](https://github.com/kulinda-sec/bugsecure-mcp/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
+  Every merged pull request earns the _Contributeur MCP_ badge on your BugSecure
+  profile once your GitHub account is linked there
+  ([CONTRIBUTING.md](CONTRIBUTING.md#community-and-recognition)).
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), including [Adding a tool](CONTRIBUTING.md#adding-a-tool).
