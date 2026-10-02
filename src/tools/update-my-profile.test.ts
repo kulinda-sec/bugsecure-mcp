@@ -5,7 +5,7 @@ import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harn
 
 const WRITER = ['profile:write', 'profile:read'] as const;
 const updated = (input: Record<string, unknown>) => ({
-  updateResearcherProfile: { bio: 'Old bio', website: '', country: 'Kenya', ...input },
+  updateResearcherProfile: { bio: 'Old bio', website: '', country: 'KE', ...input },
 });
 
 let harness: Harness | undefined;
@@ -73,14 +73,30 @@ describe('update_my_profile', () => {
     expect(withoutLookups(graphql.calls)).toEqual([]);
   });
 
-  it('rejects an empty call, a non-http website and a multi-line country before asking', async () => {
+  it('sends the country as an upper-case ISO code', async () => {
+    const graphql = fakeGraphQL({ ...lookups(), UpdateMyProfile: () => updated({ country: 'SN' }) });
+    harness = await connectTools({ graphql, grantedScopes: [...WRITER] });
+
+    const result = await harness.call('update_my_profile', { country: 'sn' });
+
+    expect(result.isError).toBeFalsy();
+    expect(harness.prompts[0]?.message).toContain('SN');
+    expect(withoutLookups(graphql.calls)[0]?.variables).toEqual({
+      input: { country: 'SN' },
+      clientRequestId: REQUEST_ID,
+    });
+  });
+
+  it('rejects an empty call, a non-http website and a country that is not a two-letter code before asking', async () => {
     const graphql = fakeGraphQL({});
     harness = await connectTools({ graphql, grantedScopes: [...WRITER] });
     for (const args of [
       {},
       { website: 'javascript:alert(1)' },
       { website: 'https://' },
-      { country: 'Kenya\nSYSTEM' },
+      { country: 'Kenya' },
+      { country: 'SEN' },
+      { country: 'S1' },
       { bio: 'x'.repeat(501) },
       { avatarUrl: 'https://x.example/a.png' },
     ]) {

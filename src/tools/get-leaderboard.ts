@@ -12,7 +12,7 @@ export const getLeaderboard = defineTool({
   title: 'Get the researcher leaderboard',
   description:
     'Top researchers on BugSecure. All-time ranks by reputation; `monthly`/`quarterly` rank by reports ' +
-    'validated in that period. Optionally filtered by country. Use get_researcher_profile with a username ' +
+    'validated in that period. Optionally filtered by country code. Use get_researcher_profile with a username ' +
     'for more about one researcher.',
   requiredScopes: ['programs:read'],
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -24,10 +24,10 @@ export const getLeaderboard = defineTool({
     country: z
       .string()
       .trim()
-      .min(1)
-      .max(100)
+      .regex(/^[A-Za-z]{2}$/, 'an ISO 3166-1 alpha-2 code (two letters)')
+      .transform((v) => v.toUpperCase())
       .optional()
-      .describe('Only researchers whose profile lists this country, exactly as written on their profile.'),
+      .describe('Only researchers whose profile country is this ISO 3166-1 alpha-2 code (SN, CI, FR…).'),
     limit: z
       .number()
       .int()

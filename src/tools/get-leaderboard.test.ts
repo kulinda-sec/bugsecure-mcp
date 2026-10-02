@@ -8,7 +8,7 @@ const entry = (rank: number, username: string) => ({
   rank,
   username,
   isAmbassador: rank === 1,
-  profile: { userId: `u${String(rank)}`, country: 'Sénégal', level: 7, xp: 1200, reputation: 900 - rank },
+  profile: { userId: `u${String(rank)}`, country: 'SN', level: 7, xp: 1200, reputation: 900 - rank },
 });
 
 let harness: Harness | undefined;
@@ -24,11 +24,11 @@ describe('get_leaderboard', () => {
     });
     harness = await connectTools({ graphql, grantedScopes: ['programs:read'] });
 
-    const result = await harness.call('get_leaderboard', { period: 'monthly', country: 'Sénégal', limit: 2 });
+    const result = await harness.call('get_leaderboard', { period: 'monthly', country: 'sn', limit: 2 });
 
     expect(result.isError).toBeFalsy();
     expect(graphql.calls).toEqual([
-      { operation: 'GetLeaderboard', variables: { limit: 2, timeRange: 'monthly', country: 'Sénégal' } },
+      { operation: 'GetLeaderboard', variables: { limit: 2, timeRange: 'monthly', country: 'SN' } },
     ]);
     const data = result.structuredContent as {
       period: string;
@@ -58,6 +58,7 @@ describe('get_leaderboard', () => {
     harness = await connectTools({ graphql, grantedScopes: ['programs:read'] });
 
     expect((await harness.call('get_leaderboard', { limit: 101 })).isError).toBe(true);
+    expect((await harness.call('get_leaderboard', { country: 'Sénégal' })).isError).toBe(true);
     expect((await harness.call('get_leaderboard', { period: 'weekly' })).isError).toBe(true);
     expect(graphql.calls).toHaveLength(0);
   });
