@@ -16,11 +16,12 @@ described in [SECURITY.md](SECURITY.md), never in an issue or pull request.
   and say in it that you are taking it.
 - **The MCP Contributor badge.** Every pull request of yours merged into this
   repository earns you the _MCP Contributor_ badge on your BugSecure profile,
-  and the matching role on the Discord. It is automatic: GitHub tells
-  BugSecure that a pull request was merged and by whom, nothing else, and
-  BugSecure credits the account whose GitHub login matches. Link your GitHub
-  account in your BugSecure settings (Settings → Account → GitHub) to receive
-  it; a pull request merged before you link is credited when you link. The
+  and the matching role on the Discord. It is automatic: GitHub reports each
+  merged pull request to BugSecure, which keeps its repository, number, title,
+  link, merge time and author, and credits the BugSecure account linked to the
+  author's GitHub account (matched by its id). Link your GitHub account in
+  your BugSecure settings (Settings → Account → GitHub) to receive it; a pull
+  request merged before you link is credited when you link. The
   badge is given once, whatever the number of pull requests, and gives no XP:
   the BugSecure leaderboard stays about vulnerabilities. If you opted in to
   celebrations on the Discord, the bot also thanks you in `#mcp-dev`.
