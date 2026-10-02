@@ -11,6 +11,8 @@ type Field = 'bio' | 'website' | 'country';
 const LABELS: Readonly<Record<Field, string>> = { bio: 'Bio', website: 'Website', country: 'Country' };
 
 const WEBSITE = /^https?:\/\/[^\s/?#]+[^\s]*$/;
+/** The API takes the country as an ISO 3166-1 alpha-2 code and refuses a name. */
+const COUNTRY_CODE = /^[A-Za-z]{2}$/;
 
 /** The profile as it is now, shown next to the new values; refuses a non-researcher before asking. */
 const currentProfile = async (
@@ -45,7 +47,8 @@ export const updateMyProfile = defineTool({
   title: 'Edit my public researcher profile',
   description:
     'Change the bio, website or country on the signed-in researcher’s public BugSecure profile (only the ' +
-    'fields given; an empty string clears one). Everyone on BugSecure sees them. Nothing else about the ' +
+    'fields given; an empty string clears one; the country is an ISO 3166-1 alpha-2 code such as SN). ' +
+    'Everyone on BugSecure sees them. Nothing else about the ' +
     'account can be changed here: the avatar, email, sign-in and payout details stay on the website. Only ' +
     'call this when the user asked; they approve the old and new values first.',
   requiredScopes: ['profile:write'],
@@ -63,9 +66,16 @@ export const updateMyProfile = defineTool({
         .refine((v) => v === '' || (WEBSITE.test(v) && !hasControlCharacters(v)), 'not an http(s) URL')
         .optional()
         .describe('Public website, http(s) URL.'),
-      country: userText(0, 100, 'Country, as shown on the profile.')
-        .refine((v) => !v.includes('\n'), 'must be one line')
-        .optional(),
+      country: z
+        .string()
+        .trim()
+        .refine(
+          (v) => v === '' || COUNTRY_CODE.test(v),
+          'an ISO 3166-1 alpha-2 code (two letters), or an empty string',
+        )
+        .transform((v) => v.toUpperCase())
+        .optional()
+        .describe('Country as an ISO 3166-1 alpha-2 code (SN, CI, FR…), or an empty string to clear it.'),
     })
     .refine((v) => v.bio !== undefined || v.website !== undefined || v.country !== undefined, {
       message: 'Give at least one of `bio`, `website` or `country`.',
