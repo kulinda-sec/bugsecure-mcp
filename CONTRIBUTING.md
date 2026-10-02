@@ -14,13 +14,16 @@ described in [SECURITY.md](SECURITY.md), never in an issue or pull request.
 - **Not sure where to start?** Pick a
   [good first issue](https://github.com/kulinda-sec/bugsecure-mcp/issues?q=is%3Aopen+label%3A%22good+first+issue%22),
   and say in it that you are taking it.
-- **The Contributeur MCP badge.** Every pull request of yours merged into this
-  repository earns you the _Contributeur MCP_ badge on your BugSecure profile,
-  and the matching role on the Discord. Link your GitHub account in your
-  BugSecure settings (Settings → Account → GitHub) to receive it; a pull request
-  merged before you link counts too. GitHub tells BugSecure only that a pull
-  request was merged and by whom. The badge gives no XP: the BugSecure
-  leaderboard stays about vulnerabilities.
+- **The MCP Contributor badge.** Every pull request of yours merged into this
+  repository earns you the _MCP Contributor_ badge on your BugSecure profile,
+  and the matching role on the Discord. It is automatic: GitHub tells
+  BugSecure that a pull request was merged and by whom, nothing else, and
+  BugSecure credits the account whose GitHub login matches. Link your GitHub
+  account in your BugSecure settings (Settings → Account → GitHub) to receive
+  it; a pull request merged before you link is credited when you link. The
+  badge is given once, whatever the number of pull requests, and gives no XP:
+  the BugSecure leaderboard stays about vulnerabilities. If you opted in to
+  celebrations on the Discord, the bot also thanks you in `#mcp-dev`.
 
 ## Development setup
 

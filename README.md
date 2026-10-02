@@ -207,7 +207,7 @@ it. Write tools are hidden entirely in read-only mode.
 | `add_report_comment`      | `reports:write`       |      ✅      | Comment on one of your reports                                                                                                                  |
 | `raise_appeal`            | `reports:write`       |      ✅      | Appeal the grade of one of your reports; BugSecure re-examines it                                                                               |
 | `mark_notifications_read` | `notifications:write` |      ✅      | Mark some of your notifications, or all, as read                                                                                                |
-| `update_my_profile`       | `profile:write`       |      ✅      | Change the bio, website or country on your public researcher profile (never the avatar); researchers only                                       |
+| `update_my_profile`       | `profile:write`       |      ✅      | Change the bio, website or country (an ISO 3166-1 code) on your public researcher profile (never the avatar); researchers only                  |
 | `save_disclosure_draft`   | `disclosures:write`   |      ✅      | Write the public disclosure draft of one of your reports. Never publishes: that takes both parties' approval on the website                     |
 | `list_my_organizations`   | `triage:read`         |      –       | Your organizations that enabled AI triage access, and whether each enabled AI grading                                                           |
 | `list_org_programs`       | `triage:read`         |      –       | Those organizations' programmes, drafts included, with their triage deadline                                                                    |
@@ -334,7 +334,7 @@ imply the matching read scope.
 | `triage:write`        |  ✅   | Update report status, comment on and assign your organizations' reports — same opt-in                                                                                                          |
 | `grade:write`         |  ✅   | Grade your organizations' reports as the organization (severity and reward) — **only organizations that enabled AI grading**                                                                   |
 | `notifications:write` |  ✅   | Mark your notifications read (only those a connected app can read)                                                                                                                             |
-| `profile:write`       |  ✅   | Edit the bio, website and country of your public researcher profile — **researcher accounts only**; never the avatar, email, sign-in or payout details                                         |
+| `profile:write`       |  ✅   | Edit the bio, website and country (an ISO 3166-1 code) of your public researcher profile — **researcher accounts only**; never the avatar, email, sign-in or payout details                    |
 | `disclosures:write`   |  ✅   | Read and save the public disclosure draft of your own reports — **researcher accounts only**; never approve, publish or withdraw one                                                           |
 
 Never available to connected apps, whatever the scopes: sign-in and account
@@ -500,8 +500,8 @@ CPU on signature checks.
   [BugSecure Discord](https://discord.gg/2gg6QnDtu).
 - Contributions are welcome: start with a
   [good first issue](https://github.com/kulinda-sec/bugsecure-mcp/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
-  Every merged pull request earns the _Contributeur MCP_ badge on your BugSecure
-  profile once your GitHub account is linked there
+  Every merged pull request earns the _MCP Contributor_ badge on your BugSecure
+  profile, automatically, once your GitHub account is linked there
   ([CONTRIBUTING.md](CONTRIBUTING.md#community-and-recognition)).
 
 ## Development
