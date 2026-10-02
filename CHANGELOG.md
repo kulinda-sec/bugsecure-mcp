@@ -10,6 +10,12 @@ are generated from the commit history by [cocogitto](https://docs.cocogitto.io)
 longer edited by hand.
 
 - - -
+## [v0.2.2](https://github.com/kulinda-sec/bugsecure-mcp/compare/fe6b22f0dde1955fbf6a4011c43bc006a49f9493..v0.2.2) - 2026-10-02
+#### Bug Fixes
+- (**tools**) the country is an ISO 3166-1 alpha-2 code, and the docs name the MCP Contributor badge (#7) - ([fe6b22f](https://github.com/kulinda-sec/bugsecure-mcp/commit/fe6b22f0dde1955fbf6a4011c43bc006a49f9493)) - Baakey Dow
+
+- - -
+
 ## [v0.2.1](https://github.com/kulinda-sec/bugsecure-mcp/compare/ec90cabbf26290a80bd3296ee3c38f2bd25809f8..v0.2.1) - 2026-09-29
 #### Bug Fixes
 - (**tools**) refuse organisation report writes whose report cannot be read (#5) - ([ec90cab](https://github.com/kulinda-sec/bugsecure-mcp/commit/ec90cabbf26290a80bd3296ee3c38f2bd25809f8)) - Sipikat, mbaye, Baakey Dow
