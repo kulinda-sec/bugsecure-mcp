@@ -93,8 +93,12 @@ npx @modelcontextprotocol/inspector --cli node dist/cli.js -e BUGSECURE_API_URL=
 ```
 
 Write tools need their scope (`reports:write`, `triage:write`, `grade:write`, `notifications:write`, `profile:write`, `disclosures:write`)
-in the login above, and ask for approval through elicitation on every call: the
-Inspector shows the approval form; answer it there. Triage tools also need an
+in the login above, and are approved on the BugSecure website on every call:
+the server registers the write with the API and asks the Inspector to open the
+review page (a URL-mode elicitation; pass `-e BUGSECURE_WEB_URL=<web app origin>`
+when the API is not the production one, or the tool names the menu path
+Settings → Agent approvals instead); approve it there, signed in as the same
+user. Triage tools also need an
 account that belongs to an organization with AI assistant access enabled, and
 `grade_report` one whose organization also enabled AI grading. `profile:write`
 and `disclosures:write` are granted to researcher accounts only.
@@ -109,7 +113,8 @@ src/
   instructions.ts         server `instructions` sent to the model
   tools/
     define-tool.ts        the tool framework (defineTool, selection, scope checks, invocation)
-    approval.ts           user approval of write tools (elicitation, multi round-trip)
+    approval.ts           user approval of write tools on the BugSecure website (agent approvals, URL elicitation)
+    approval-url.ts       the review URL is accepted only on the configured web origin
     index.ts              the registry: every tool, listed once
     <tool-name>.ts        one file per tool, with <tool-name>.test.ts next to it
     shared/               output schemas and mappers shared by several tools
@@ -253,8 +258,10 @@ input (rejected before any API call) and an API error (`BugSecureError`) mapped
 to an actionable message. `src/tools/registry.test.ts` checks every registered
 tool for you: listing (and `--read-only`), refusal without its scopes,
 annotations, and that no output string escapes fencing or a strict shape.
-`src/tools/approval.test.ts` checks every write tool's approval prompt (add sample
-arguments for a new tool to `test/helpers/sample-args.ts`).
+`src/tools/approval.test.ts` checks every write tool's approval flow: the payload
+it registers, the review page it opens, and that it writes only once approved
+(add sample arguments for a new tool to `test/helpers/sample-args.ts`, and its
+mutation to `APPROVED_OPERATION` and `WRITE_OPERATION` there).
 
 ### 5. Document it
 
@@ -278,36 +285,47 @@ time and is never edited by hand.
   (any `*:write`) is a write tool: `readOnlyHint: false`, and it
   disappears under `--read-only`. `defineTool` rejects inconsistent annotations.
 - **Write tools describe their payload.** A write tool must define
-  `approval(input)`: the action, who will see it, whether it is irreversible and
-  every value that will be sent. The framework shows it to the user (MCP
-  elicitation) and only runs the handler once they approve; `defineTool`
-  refuses a write tool without it. Never add a "confirmed" argument: the model
-  fills arguments, the user answers approvals.
+  `payload(input, context)`: a short `action` ("grade a report as your
+  organisation", never an argument value) and the exact mutation(s) it will
+  send, each built with `mutation(Document, variables)` (the variables minus
+  `clientRequestId`). The framework registers the payload with BugSecure, sends
+  the user to review it on the website (a URL-mode elicitation; a client that
+  cannot open URLs is told the menu path) and only runs the handler once the
+  API says the user approved; the handler writes through
+  `context.approved.part.send({ signal })` (or `approved.parts[i].send` for a
+  multi-part payload) and nothing else. `defineTool` refuses a write tool
+  without a payload. Never add a "confirmed" argument: the model fills
+  arguments, the user decides on BugSecure.
 - **Every write carries its idempotency key.** Each mutation document declares
-  `$clientRequestId: String!` and passes it; the handler sends
-  `context.clientRequestId` (the approval's nonce), or `partRequestId(…)` per
-  mutation when one call sends several (`src/tools/shared/request-id.ts`,
-  checked by `api-surface.test.ts`). Send the same variable shape on every
-  attempt (the API hashes `null` and an omitted field differently). The
-  framework resends a mutation once, with the same key, when its answer was
-  lost (`src/tools/shared/write-retry.ts`): never add a retry of your own, and
-  keep a caught write error's `hint`, which says whether the change may have
-  been made.
+  `$clientRequestId: String!` and passes it; the framework adds the key when an
+  approved part is sent: the approval's own key for a single part,
+  `partRequestId(…)` per part when one call sends several
+  (`src/tools/shared/request-id.ts`, checked by `api-surface.test.ts`). Build
+  the variables once, in `payload`: the user approves exactly those, the API
+  hashes them (`null` and an omitted field differently), and the same object is
+  sent. The framework resends a mutation once, with the same key, when its
+  answer was lost (`src/tools/shared/write-retry.ts`): never add a retry of
+  your own (a part can be sent once), and keep a caught write error's `hint`,
+  which says whether the change may have been made.
 - **Honest annotations.** `destructiveHint: true` when the change cannot be
   undone or overwrites data — so every current write tool is destructive (a
   report, comment, appeal, final status or grade cannot be taken back; a
   profile edit, disclosure draft or assignment overwrites the previous value;
   a notification marked read cannot be marked unread);
   `idempotentHint: true` only if repeating the call has no further effect;
-  `openWorldHint: true` when output includes third-party content. The approval
-  prompt is the same for every write (there is no separate typed confirmation);
-  what differs is whether it says the change cannot be undone (`irreversible`).
-- **Look up, then ask.** An `approval` may make read-only lookups to show what
-  ids refer to (`context`), with the scopes they need in `optionalScopes`
-  (read scopes, or a write scope that also grants the read, such as
-  `disclosures:write` for the draft; never for a mutation); a
-  failed lookup is a `note`, never a failure. It may throw a `BugSecureError` to
-  refuse before the user is asked (not the user's own report, a staff account…).
+  `openWorldHint: true` when output includes third-party content. The review
+  page on BugSecure says whether a change can be undone and who sees it, from
+  the API's own catalogue of operations; the tool does not repeat it.
+- **Check, then ask; check again, then send.** `payload` runs on every round of
+  a call: before the user is asked, and again before the approved write is
+  sent. It may make read-only SAFETY lookups (whose report it is, which revision
+  a draft is at, whether the account is staff), with the scopes they need in
+  `requiredScopes` when the check is mandatory or `optionalScopes` when the
+  tool can proceed or refuse without it (read scopes, or a write scope that
+  also grants the read, such as `disclosures:write` for the draft; never for a
+  mutation), and throw a `BugSecureError` to refuse before anything is
+  registered. Nothing is looked up for display: the review page shows what ids
+  refer to, with context the API looks up itself.
 - **Fence free text.** Every free-text field (report bodies, comments, programme
   text, usernames, organization names…) goes through `untrusted(source, text)`
   and is declared with `wrapped()`, which checks at runtime that it really is

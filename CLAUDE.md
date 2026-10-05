@@ -49,7 +49,10 @@ never npm or yarn.
   (JWT validation, token exchange, RFC 9728 metadata).
 - `src/transports/` — stdio, and the HTTP app plus its Node adapter.
 - `src/untrusted.ts` — fencing of third-party text; `src/tools/approval.ts` —
-  human approval of writes via elicitation.
+  human approval of writes on the BugSecure website (agent approvals: the
+  framework registers the payload with the API, opens the review page through a
+  URL-mode elicitation, polls the decision); `src/tools/approval-url.ts` —
+  the review URL is accepted only on the configured web origin.
 
 ## Rules
 
@@ -57,22 +60,37 @@ never npm or yarn.
   wrote (report and comment bodies, titles, names, bios, programme text) goes
   through `untrusted()` / `wrapped()`. Every other output string needs a strict
   pattern, enum or format; a registry test fails on any unconstrained string.
-- **Writes need a human.** Tools holding a write scope (any `*:write`) must
-  define `approval`; they run only after the user accepts an elicitation
-  showing the exact payload. Never add a model-filled "confirmed" argument
-  instead. `approval` may look things up read-only (declare the extra read
-  scopes in `optionalScopes`) and refuse before asking by throwing a
-  `BugSecureError`. `optionalScopes` hold read scopes only, except a write
-  scope that also grants a read (`WRITE_SCOPES_WITH_READS`: `disclosures:write`
-  reads the draft) for that read alone; every mutation a tool sends must be
-  covered by its `requiredScopes` (`api-surface.test.ts`).
+- **Writes need a human, on BugSecure.** Tools holding a write scope (any
+  `*:write`) must define `payload(input, context)`: the exact mutation(s) they
+  will send, each built with `mutation(Document, variables)` (variables minus
+  the key). The framework registers the payload with the API
+  (`createAgentApproval`), sends the user to review it on the BugSecure website
+  and runs the handler only once the API says APPROVED; the handler writes
+  only through `context.approved.part.send()` / `approved.parts[i].send()`,
+  never `graphql.request` on a mutation. Never add a model-filled "confirmed"
+  argument instead. `payload` runs on both rounds (before asking and before
+  sending), so it carries the safety refusals (staff account, someone else's
+  report, revision moved): look up read-only and throw a `BugSecureError` to
+  refuse before the user is asked. No lookup for display: the review page shows
+  what ids refer to, so `optionalScopes` exist only for a safety lookup (read
+  scopes only, except a write scope that also grants a read,
+  `WRITE_SCOPES_WITH_READS`: `disclosures:write` reads the draft). The three
+  framework documents (`agent-approvals.graphql`) are sent under every write
+  tool's own write scope and only by `src/tools/approval.ts`; every mutation a
+  tool sends must be covered by its `requiredScopes` (`api-surface.test.ts`).
+  The elicitation message names the action and the web host, never an argument
+  value or a URL for the model; a client without URL-mode elicitation is told
+  to send the user to BugSecure → Settings → Agent approvals.
 - **Every write carries its idempotency key.** Each mutation document declares
-  `$clientRequestId: String!` and passes it; the handler sends
-  `context.clientRequestId` (the approval's nonce), or `partRequestId(…)` per
-  mutation when one call sends several (`src/tools/shared/request-id.ts`,
+  `$clientRequestId: String!` and passes it; the framework adds the key when a
+  part is sent: the approval's own for a single part, `partRequestId(…)` per
+  part when one call sends several (`src/tools/shared/request-id.ts`,
   checked by `api-surface.test.ts`). The framework resends a mutation once,
-  with the same key, when its answer was lost (`src/tools/shared/write-retry.ts`);
-  never add a retry of your own, and keep a caught write error's `hint`.
+  with the same key, when its answer was lost and the call has time left to
+  hear the resend (`src/tools/shared/write-retry.ts`; every write attempt is
+  bounded by the call's deadline, as a timeout, never as a cancellation);
+  never add a retry of your own (a part can be sent once), and keep a caught
+  write error's `hint`.
 - **Know which side you act on.** One token can hold researcher and
   organisation scopes, and the API serves both sides through the same fields:
   researcher tools act only on the caller's own reports, organisation tools

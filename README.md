@@ -19,7 +19,8 @@ permissions you approve**.
 - Third-party text (reports, comments, programme descriptions) is fenced as
   untrusted data before any model sees it.
 - Nothing is ever written without **your explicit approval** of the exact
-  content, asked by BugSecure in your MCP client ([details](#write-tools-and-approvals)).
+  content, given on the BugSecure website, signed in, and enforced by the
+  BugSecure API itself ([details](#write-tools-and-approvals)).
 - Small dependency tree; releases are built in CI with npm provenance.
 
 > [!IMPORTANT]
@@ -250,73 +251,85 @@ owes the researcher. It cannot be edited or withdrawn, only appealed (by the
 researcher or your organization); BugSecure, as the appointed third party,
 re-examines an appealed grade. A **Critical** grade is provisional: no
 certificate issues until BugSecure reviews it (within 5 business days; if the
-review lapses, your grade stands). The approval dialog shows the full grade,
-the report it applies to and says it is binding. `DUPLICATE`, `OUT_OF_SCOPE` and
+review lapses, your grade stands). The review page on BugSecure shows the full
+grade, the report it applies to, the payout it would issue, and says it is
+binding; approving it asks for a recent sign-in. `DUPLICATE`, `OUT_OF_SCOPE` and
 `NOT_APPLICABLE` are the only statuses that stop the triage deadline (and are
 refused once a report is graded); a report left ungraded past its deadline may
 be graded by BugSecure instead.
 
 ## Write tools and approvals
 
-Every tool that changes something (✅ above) asks **you** — not the model —
-before anything is sent. BugSecure shows the exact content in your MCP client's
-approval dialog (MCP [elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation),
-form mode): what will be sent, who will see it (for example _"VISIBLE TO THE
-RESEARCHER"_ or _"Internal note: only your organization sees it"_) and whether it
-can be undone. Nothing is sent unless you tick **Send exactly this** and accept.
-Declining, dismissing the dialog, or a model changing the content after you saw
-it all send nothing.
+Every tool that changes something (✅ above) is approved by **you** — not the
+model — on the BugSecure website, before anything is sent, and the BugSecure
+API refuses the write without that approval. The flow:
 
-What you read is what is sent. Every line of every value starts with `│ `, so
-text inside a value cannot pass for the dialog's own lines (a fake "end of
-payload" or "approve only if…"); each value states its length in characters
-and lines. Invisible, direction-changing and control characters (carriage
-return, escape sequences, line separators…) are shown as `\u{…}` escapes, a `<`
-that could open HTML or a Markdown comment is shown as `\<`, and long runs of
-empty lines are collapsed into one marked line. Above the payload, and marked as
-not sent, the dialog names what the ids refer to — the programme, the report's
-title, the researcher, the grade you appeal — as looked up read-only on
-BugSecure; if a lookup is not possible it says so and shows the id only.
+1. The assistant calls a write tool. The server registers with BugSecure the
+   exact mutation it is about to send (the operation and every argument) and
+   receives a review page for it. Nothing is written at this point.
+2. Your MCP client shows you the page's address (on the BugSecure host) and asks
+   whether to open it (MCP [URL-mode elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation)).
+   The message names what the agent wants to do, never the content: the content
+   is on the page.
+3. On BugSecure, signed in, you read the full payload with the context BugSecure
+   looks up itself — the report's title and programme, the researcher, the
+   payout a grade would issue, the current draft a save would replace — and
+   approve or decline. Approving a grade also asks for a recent sign-in
+   (password or two-factor code). Nothing you read comes from the assistant
+   unmarked: text the agent wrote is shown as the agent's.
+4. The tool call completes: the server waits up to about 45 seconds for your
+   decision, then sends the write with that approval's single-use key. If you
+   have not decided yet, the tool tells the assistant to ask you and to call it
+   again only when you say you approved; declining, or letting the request
+   expire (15 minutes), sends nothing.
 
-Each approved change carries the approval's single-use nonce as an idempotency
-key. If its answer is lost (a timeout, a dropped connection, a 5xx, an internal
-error), the server resends it once with that same key, which BugSecure answers
-with what the first request wrote rather than a second change; if the resend
-gets no confirmation either, the tool says the change may already have been
-made, to check before approving it again. A replayed approval is sent with the
-same key too, so it gets back what the first one did and makes no second
-change, for every write (see [SECURITY.md](SECURITY.md#requirements)). Write
-tools need a BugSecure API that stores idempotency keys on every write
-(September 2026); with an older API they report it and send nothing, and read
-tools keep working.
+The API enforces every step: a write from a connected app runs only with an
+approval that is yours, for this connection, APPROVED, unexpired, unused, and
+whose stored arguments hash to the arguments actually sent; the approval is
+used up in the same transaction as the write. Deciding an approval is reserved
+to a first-party session: no OAuth token, and so no assistant, can approve. The
+server, for its part, shows a review address only when it is exactly this
+approval's page on the configured BugSecure web origin (`BUGSECURE_WEB_URL`);
+anything else, and it falls back to the menu path below. No address is ever
+relayed through the model.
 
-An approval can carry at most 50,000 characters in total: more than that cannot
-be reviewed in a dialog, so such a report is refused before you are asked, and
-belongs on the website. Tool inputs refuse control characters other than tab
-and new line outright.
+Each approved change carries the approval's key as an idempotency key. If its
+answer is lost (a timeout, a dropped connection, a 5xx, an internal error), the
+server resends it once with that same key, which BugSecure answers with what the
+first request wrote rather than a second change; if the resend gets no
+confirmation either, or the call has no time left to hear one (every attempt
+ends before the client gives up on the call), the tool says the change may
+already have been made, to check before approving it again. A call that comes back with an approval
+BugSecure already used is told the same ([SECURITY.md](SECURITY.md#requirements)).
+Write tools need a BugSecure API with agent approvals (October 2026); with an
+older API they report it and send nothing, and read tools keep working.
 
-This is fail-closed: a client that cannot show approval dialogs gets an error
-from every write tool, and read tools keep working. Client support as last checked
-on **25 September 2026** (clients change quickly: check your client's current
-documentation if a row looks out of date):
+Clients that cannot open a page (no URL-mode elicitation) can still write:
+the approval is registered all the same, and the tool tells the assistant to
+ask you to open **BugSecure → Settings → Agent approvals**, where every pending
+request of yours is listed. Once you approved it there, the assistant calls the
+tool again with the same arguments and the write goes out, once. Client support
+as last checked on **5 October 2026** (clients change quickly: check your
+client's current documentation if a row looks out of date):
 
-| Client                     | Approval dialogs (elicitation)                                                        | Writes with the local server | Writes with the hosted server                                                                                                                                                                                |
-| -------------------------- | ------------------------------------------------------------------------------------- | :--------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Claude Code                | Yes ([docs](https://code.claude.com/docs/en/mcp#respond-to-mcp-elicitation-requests)) |              ✅              | ✅ with its v2 MCP runtime, which speaks protocol 2026-07-28 to HTTP servers ([docs](https://code.claude.com/docs/en/mcp#mcp-client-runtimes)); the older runtime cannot receive approval requests over HTTP |
-| Claude Desktop / claude.ai | Not yet ([feature request](https://github.com/anthropics/claude-ai-mcp/issues/153))   |              –               | –                                                                                                                                                                                                            |
-| VS Code (Copilot)          | Yes, since 1.102 ([release notes](https://code.visualstudio.com/updates/v1_102))      |              ✅              | Only once it speaks protocol 2026-07-28 (not announced yet): use the local server for writes                                                                                                                 |
-| Cursor                     | Yes ([docs](https://cursor.com/docs/context/mcp))                                     |              ✅              | Only if it speaks protocol 2026-07-28 (not documented): use the local server for writes                                                                                                                      |
+| Client                     | Opens the review page (URL-mode elicitation)                                                                                                         | Writes with the local server                                       | Writes with the hosted server                                                                                                                  |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code                | Yes, in the system browser, after a consent dialog naming the host ([docs](https://code.claude.com/docs/en/mcp#respond-to-mcp-elicitation-requests)) | ✅                                                                 | ✅ with its v2 MCP runtime, which speaks protocol 2026-07-28 to HTTP servers ([docs](https://code.claude.com/docs/en/mcp#mcp-client-runtimes)) |
+| VS Code (Copilot)          | Yes, since 1.107 ([release notes](https://code.visualstudio.com/updates/v1_107))                                                                     | ✅                                                                 | ✅ once it speaks protocol 2026-07-28; until then through Settings → Agent approvals                                                           |
+| Cursor                     | Unknown (form-mode elicitation is documented, URL mode is not: [docs](https://cursor.com/docs/context/mcp))                                          | ✅ (through Settings → Agent approvals if it cannot open the page) | ✅ through Settings → Agent approvals                                                                                                          |
+| Claude Desktop / claude.ai | No elicitation ([feature request](https://github.com/anthropics/claude-ai-mcp/issues/153))                                                           | –                                                                  | ✅ through Settings → Agent approvals: the tool registers the request, you approve it on BugSecure, the assistant calls the tool again         |
 
-Why the hosted column differs: the hosted server is stateless, so it can only ask
-for approval with the 2026-07-28 protocol, which carries the request inside the
-tool result ([multi round-trip requests](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr)).
-Clients still on the 2025 protocol can only be asked over a live connection,
-which the local (stdio) server has.
+Why the hosted column mentions the protocol: the hosted server is stateless, so
+it can only open the page with the 2026-07-28 protocol, which carries the
+request inside the tool result ([multi round-trip requests](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr)).
+Clients still on the 2025 protocol can be asked over a live connection, which
+the local (stdio) server has; over HTTP they use the menu path.
 
 > [!WARNING]
-> Some clients can answer approval dialogs automatically (Claude Code's
-> `Elicitation` hook, for example). Do not configure that for BugSecure: it
-> would approve whatever the model proposes.
+> Some clients can answer elicitations automatically (Claude Code's
+> `Elicitation` hook, for example). Answering "accept" only opens the page: it
+> approves nothing. Still, do not configure that for BugSecure, so that you
+> always see where you are being sent.
 
 ## Scopes
 
@@ -353,13 +366,17 @@ and platform administration), and a test keeps it that way.
   `insufficient_scope` step-up naming the scopes you already have plus the
   missing ones; local: the exact `login --scopes` command). `--read-only`
   removes every tool that could change anything.
-- **You approve every write.** See [Write tools and approvals](#write-tools-and-approvals).
-  The approval is bound to your identity, to the exact arguments (a SHA-256
-  digest, HMAC-sealed in the request state) and to ten minutes, and can be used
-  once per server instance. Its single-use nonce is also sent to the API as the
-  write's idempotency key, so a replay that reaches another instance gets the
-  first result back instead of a second change, for every write (see
-  [SECURITY.md](SECURITY.md#requirements)).
+- **You approve every write, on BugSecure.** See [Write tools and approvals](#write-tools-and-approvals).
+  The approval lives in the BugSecure API, bound to you, to this connection, to
+  the exact arguments (their hash) and to fifteen minutes, and is used up by the
+  write it approves; only a first-party session can decide it. The state the
+  server hands your client between the two rounds is HMAC-sealed and bound to
+  your identity, the tool, a digest of the arguments and payload, and the
+  approval; it cannot be swapped or tampered with. The approval's key is also
+  the write's idempotency key, so a replay gets the first result back instead
+  of a second change (see [SECURITY.md](SECURITY.md#requirements)). The review
+  address is shown only when it is this approval's page on the configured
+  BugSecure web origin, and never passes through the model.
 - **OAuth 2.1 in both modes.**
   - _Local:_ the CLI is a public OAuth client. Login uses the authorization code
     flow with PKCE (S256), a random `state` compared in constant time, and
@@ -415,7 +432,7 @@ and platform administration), and a test keeps it that way.
   marker) unless you ask for the full text, and comments and history come a page
   at a time. This
   reduces, but cannot eliminate, prompt-injection risk: keep write scopes off
-  unless you need them, and read approval dialogs before accepting.
+  unless you need them, and read the review page before approving.
 - **Hardened HTTP surface.** Host and Origin allowlists (DNS rebinding), no CORS
   wildcard on the MCP endpoint, POST only, credentials checked from the headers
   before any request body is read, request body limits, per-request deadlines,
@@ -436,26 +453,29 @@ the BugSecure bug bounty programme.
 
 Flags override environment variables.
 
-| Variable / flag                                                  | Mode   | Default                                 | Meaning                                                                                                                                             |
-| ---------------------------------------------------------------- | ------ | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BUGSECURE_API_URL` / `--api-url`                                | both   | `https://bugsecure-api.senintel.sn`     | API and OAuth issuer URL; https only (http allowed for localhost)                                                                                   |
-| `BUGSECURE_READ_ONLY=1` / `--read-only`                          | both   | off                                     | Never expose write tools                                                                                                                            |
-| `BUGSECURE_LOG_LEVEL` / `--log-level`                            | both   | `info`                                  | `debug`, `info`, `warn`, `error`, `silent` (stderr)                                                                                                 |
-| `BUGSECURE_CREDENTIAL_STORE`                                     | local  | `auto`                                  | `auto` (keychain, else file), `keychain`, `file`                                                                                                    |
-| `BUGSECURE_CONFIG_DIR`                                           | local  | platform config dir                     | Location of the fallback credentials file and refresh lock                                                                                          |
-| `BUGSECURE_MCP_RESOURCE`                                         | hosted | `https://bugsecure-mcp.senintel.sn/mcp` | This server's canonical URL (the token audience)                                                                                                    |
-| `BUGSECURE_CLIENT_SECRET_FILE` / `BUGSECURE_CLIENT_SECRET`       | hosted | –                                       | Confidential client secret for token exchange (prefer the file)                                                                                     |
-| `BUGSECURE_MCP_APPROVAL_KEY_FILE` / `BUGSECURE_MCP_APPROVAL_KEY` | hosted | – (required, except on localhost)       | ≥ 32 random characters sealing approval prompts; shared by all instances                                                                            |
-| `BUGSECURE_CLIENT_ID`                                            | hosted | `bugsecure-mcp-hosted`                  | Confidential client id                                                                                                                              |
-| `BUGSECURE_ALLOWED_ORIGINS`                                      | hosted | none                                    | Comma-separated browser origins allowed to call `/mcp`: `https://app.example:8443`, or a bare hostname for `https://` on port 443; compared exactly |
-| `BUGSECURE_ALLOWED_HOSTS`                                        | hosted | resource host (+ loopback on localhost) | Comma-separated `Host` header allowlist                                                                                                             |
-| `HOST` / `--host`, `PORT` / `--port`                             | hosted | `127.0.0.1`, `8944`                     | Listen address (the container sets `0.0.0.0`)                                                                                                       |
-| `BUGSECURE_MAX_BODY_BYTES`                                       | hosted | `1048576`                               | Request body limit (fits the largest approvable write)                                                                                              |
-| `BUGSECURE_RATE_LIMIT_PER_MINUTE`                                | hosted | `60`                                    | Tool calls per minute per user and client (sustained); per user across clients: twice this                                                          |
-| `BUGSECURE_RATE_LIMIT_BURST`                                     | hosted | `20`                                    | Tool calls allowed in a burst (per user: twice this)                                                                                                |
-| `BUGSECURE_RATE_LIMIT_WRITES_PER_MINUTE`                         | hosted | `12`                                    | Write-tool calls per minute per user (an approved write is two calls)                                                                               |
-| `BUGSECURE_RATE_LIMIT_WRITE_BURST`                               | hosted | `6`                                     | Write-tool calls allowed in a burst per user                                                                                                        |
-| `BUGSECURE_RATE_LIMIT_MAX_KEYS`                                  | hosted | `10000`                                 | Most keys each limiter tracks at once (bounds memory)                                                                                               |
+| Variable / flag                                                  | Mode   | Default                                                         | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------------------------------------- | ------ | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BUGSECURE_API_URL` / `--api-url`                                | both   | `https://bugsecure-api.senintel.sn`                             | API and OAuth issuer URL; https only (http allowed for localhost)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `BUGSECURE_WEB_URL` / `--web-url`                                | both   | `https://bugsecure.senintel.sn` with the default API, else none | Origin of the BugSecure web app where writes are approved; review pages are opened only on it. Without one, write tools send users to Settings → Agent approvals                                                                                                                                                                                                                                                                                                                                                                                 |
+| `BUGSECURE_APPROVAL_POLL_INTERVAL_MS`                            | both   | `2000`                                                          | How often a write tool asks BugSecure for the user's decision while it waits (100–10000)                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `BUGSECURE_APPROVAL_POLL_BUDGET_MS`                              | both   | `45000`                                                         | How long one call waits for the decision (1000–55000). Capped so that one write attempt (at most 20 s of the API timeout `BUGSECURE_REQUEST_TIMEOUT_MS`, 1000–120000, default 20000; an attempt is cut to the time left in the call) and the answer still fit before the request deadline: the MCP SDK client's 60 s and, hosted, the server's three request timeouts (hence at least 5000), whichever is shorter (38 s with the defaults); keep it under the load balancer's idle timeout. A decision arriving after the budget is not acted on |
+| `BUGSECURE_READ_ONLY=1` / `--read-only`                          | both   | off                                                             | Never expose write tools                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `BUGSECURE_LOG_LEVEL` / `--log-level`                            | both   | `info`                                                          | `debug`, `info`, `warn`, `error`, `silent` (stderr)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `BUGSECURE_CREDENTIAL_STORE`                                     | local  | `auto`                                                          | `auto` (keychain, else file), `keychain`, `file`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `BUGSECURE_CONFIG_DIR`                                           | local  | platform config dir                                             | Location of the fallback credentials file and refresh lock                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `BUGSECURE_MCP_RESOURCE`                                         | hosted | `https://bugsecure-mcp.senintel.sn/mcp`                         | This server's canonical URL (the token audience)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `BUGSECURE_CLIENT_SECRET_FILE` / `BUGSECURE_CLIENT_SECRET`       | hosted | –                                                               | Confidential client secret for token exchange (prefer the file)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `BUGSECURE_MCP_APPROVAL_KEY_FILE` / `BUGSECURE_MCP_APPROVAL_KEY` | hosted | – (required, except on localhost)                               | ≥ 32 random characters sealing the state of an approval in flight (between the round that asks and the one that waits); shared by all instances                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `BUGSECURE_CLIENT_ID`                                            | hosted | `bugsecure-mcp-hosted`                                          | Confidential client id                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `BUGSECURE_ALLOWED_ORIGINS`                                      | hosted | none                                                            | Comma-separated browser origins allowed to call `/mcp`: `https://app.example:8443`, or a bare hostname for `https://` on port 443; compared exactly                                                                                                                                                                                                                                                                                                                                                                                              |
+| `BUGSECURE_ALLOWED_HOSTS`                                        | hosted | resource host (+ loopback on localhost)                         | Comma-separated `Host` header allowlist                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `HOST` / `--host`, `PORT` / `--port`                             | hosted | `127.0.0.1`, `8944`                                             | Listen address (the container sets `0.0.0.0`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `BUGSECURE_MAX_BODY_BYTES`                                       | hosted | `1048576`                                                       | Request body limit (fits the largest approvable write)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `BUGSECURE_RATE_LIMIT_PER_MINUTE`                                | hosted | `60`                                                            | Tool calls per minute per user and client (sustained); per user across clients: twice this                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `BUGSECURE_RATE_LIMIT_BURST`                                     | hosted | `20`                                                            | Tool calls allowed in a burst (per user: twice this)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `BUGSECURE_RATE_LIMIT_WRITES_PER_MINUTE`                         | hosted | `12`                                                            | Write-tool calls per minute per user (an approved write is two calls)                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `BUGSECURE_RATE_LIMIT_WRITE_BURST`                               | hosted | `6`                                                             | Write-tool calls allowed in a burst per user                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `BUGSECURE_RATE_LIMIT_MAX_KEYS`                                  | hosted | `10000`                                                         | Most keys each limiter tracks at once (bounds memory)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ### Self-hosting the remote server
 
@@ -463,6 +483,8 @@ Flags override environment variables.
 docker build -t bugsecure-mcp .
 docker run --rm -p 8944:8944 \
   -e BUGSECURE_MCP_RESOURCE=https://mcp.example.com/mcp \
+  -e BUGSECURE_API_URL=https://api.example.com \
+  -e BUGSECURE_WEB_URL=https://app.example.com \
   -e BUGSECURE_CLIENT_SECRET_FILE=/run/secrets/client_secret \
   -e BUGSECURE_MCP_APPROVAL_KEY_FILE=/run/secrets/approval_key \
   -v "$PWD/client_secret:/run/secrets/client_secret:ro" \
@@ -472,19 +494,21 @@ docker run --rm -p 8944:8944 \
 
 Terminate TLS in front of it; the resource URL must be the public `https` URL
 clients use, and your BugSecure authorization server must know both that
-resource and the confidential client. Approval prompts are sealed with the
-dedicated approval key (`openssl rand -base64 32`; the server refuses to start
-without one unless its resource is on localhost), so every instance behind a
-load balancer must share it; rotating it only invalidates approvals in flight.
-Each instance remembers used approvals for ten minutes and refuses a second use.
-Instances do not share that memory; the API's key store covers what it
-misses: every approved write is sent with its approval's nonce as an idempotency
-key (`clientRequestId`), and the BugSecure API performs each write at most once
-per user, operation and key. A replayed approval that reaches another instance
-then gets back what the first write did, and no second report, comment or
-change is made. Write tools need a BugSecure API that stores idempotency keys
-on every write (September 2026): an older API refuses every write from this
-version, and the tools say so. See [SECURITY.md](SECURITY.md#requirements).
+resource and the confidential client. `BUGSECURE_WEB_URL` is the web app of
+that API: review pages are opened only on that origin, and without it write
+tools send users to Settings → Agent approvals (it defaults to the production
+web app only with the production API). The state of an approval in flight is
+sealed with the dedicated approval key (`openssl rand -base64 32`; the server
+refuses to start without one unless its resource is on localhost), so every
+instance behind a load balancer must share it; rotating it only invalidates
+the request states in flight, never an approval, which lives in the API.
+Instances share nothing else and need not: the decision is read from the API,
+which performs each approved write at most once (the approval is used up by
+the write, and the write's idempotency key, `clientRequestId`, is the
+approval's). Keep `BUGSECURE_APPROVAL_POLL_BUDGET_MS` under your load
+balancer's idle timeout. Write tools need a BugSecure API with agent approvals
+(October 2026): an older API refuses every write from this version, and the
+tools say so. See [SECURITY.md](SECURITY.md#requirements).
 
 The server does not rate limit requests before they are authenticated: every
 request with a bearer token has its JWT signature verified, and the JWKS
