@@ -11,6 +11,8 @@ import { LOOPBACK_HOSTS } from './http.js';
 import { LOG_LEVELS, type LogLevel } from './logger.js';
 
 export const DEFAULT_API_URL = 'https://bugsecure-api.senintel.sn';
+/** The BugSecure web app that goes with `DEFAULT_API_URL`: where approvals are reviewed. */
+export const DEFAULT_WEB_URL = 'https://bugsecure.senintel.sn';
 export const DEFAULT_MCP_RESOURCE = 'https://bugsecure-mcp.senintel.sn/mcp';
 export const LOCAL_CLIENT_ID = 'bugsecure-mcp-cli';
 export const HOSTED_CLIENT_ID = 'bugsecure-mcp-hosted';
@@ -49,10 +51,13 @@ const boolish = z
 
 const Env = z.object({
   BUGSECURE_API_URL: z.string().optional(),
+  BUGSECURE_WEB_URL: z.string().optional(),
   BUGSECURE_ISSUER: z.string().optional(),
   BUGSECURE_READ_ONLY: boolish.optional(),
   BUGSECURE_LOG_LEVEL: z.enum(LOG_LEVELS).optional(),
   BUGSECURE_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).optional(),
+  BUGSECURE_APPROVAL_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(10_000).optional(),
+  BUGSECURE_APPROVAL_POLL_BUDGET_MS: z.coerce.number().int().min(1_000).max(55_000).optional(),
   // stdio / local
   BUGSECURE_CREDENTIAL_STORE: z.enum(['auto', 'keychain', 'file']).optional(),
   BUGSECURE_CONFIG_DIR: z.string().min(1).optional(),
@@ -86,6 +91,7 @@ type Env = z.infer<typeof Env>;
 /** Flags that override environment variables (all optional). */
 export interface ConfigFlags {
   readonly apiUrl?: string | undefined;
+  readonly webUrl?: string | undefined;
   readonly readOnly?: boolean | undefined;
   readonly logLevel?: LogLevel | undefined;
   readonly host?: string | undefined;
@@ -96,11 +102,27 @@ export interface CommonConfig {
   /** API base URL, canonical (no trailing slash). Also the OAuth resource for API tokens. */
   readonly apiUrl: string;
   readonly graphqlUrl: string;
+  /**
+   * Origin of the BugSecure web app where the user reviews and approves
+   * writes (`https://host[:port]`, no path). The review URL the API returns
+   * for an approval is shown only when it is on this origin. Defaults to the
+   * production web app only when `apiUrl` is the production API; otherwise
+   * `undefined`, and write tools send the user to BugSecure's own menu
+   * (Settings → Agent approvals) instead of opening the page.
+   */
+  readonly webUrl: string | undefined;
   /** OAuth issuer identifier (RFC 8414). Defaults to the API URL. */
   readonly issuer: string;
   readonly readOnly: boolean;
   readonly logLevel: LogLevel;
   readonly requestTimeoutMs: number;
+  /**
+   * How a write tool waits for the user's decision on the review page: one
+   * poll every `intervalMs`, for at most `budgetMs` per call. The budget must
+   * stay under the client's request timeout (60 s in the SDK) and, hosted,
+   * under the load balancer's idle timeout.
+   */
+  readonly approvalPoll: { readonly intervalMs: number; readonly budgetMs: number };
 }
 
 export interface LocalConfig extends CommonConfig {
@@ -159,15 +181,41 @@ const parseEnv = (env: NodeJS.ProcessEnv): Env => {
   return result.data;
 };
 
+/** Default poll for the user's decision: every 2 s, for up to 45 s (under the SDK's 60 s request timeout). */
+export const DEFAULT_APPROVAL_POLL = { intervalMs: 2_000, budgetMs: 45_000 } as const;
+
+/**
+ * The web origin approvals are reviewed on. Given explicitly, it must be an
+ * origin alone (https, or http on localhost): a path, query or credentials
+ * would be silently ignored by the origin comparison, so they are refused.
+ * Without one, the production web app is assumed only for the production API:
+ * any other API (staging, a developer's machine) has a web app this server
+ * cannot guess, and guessing by rewriting the API host would point users at a
+ * host nobody configured.
+ */
+const resolveWebUrl = (raw: string | undefined, apiUrl: string): string | undefined => {
+  if (raw === undefined) return apiUrl === DEFAULT_API_URL ? DEFAULT_WEB_URL : undefined;
+  const canonical = canonicalUrl(raw, 'BUGSECURE_WEB_URL');
+  if (new URL(canonical).pathname !== '/') {
+    throw new ConfigError(`BUGSECURE_WEB_URL must be an origin (scheme, host and port only): ${canonical}`);
+  }
+  return canonical;
+};
+
 const common = (env: Env, flags: ConfigFlags): CommonConfig => {
   const apiUrl = canonicalUrl(flags.apiUrl ?? env.BUGSECURE_API_URL ?? DEFAULT_API_URL, 'API URL');
   return {
     apiUrl,
     graphqlUrl: `${apiUrl}/graphql`,
+    webUrl: resolveWebUrl(flags.webUrl ?? env.BUGSECURE_WEB_URL, apiUrl),
     issuer: canonicalUrl(env.BUGSECURE_ISSUER ?? apiUrl, 'BUGSECURE_ISSUER'),
     readOnly: flags.readOnly ?? env.BUGSECURE_READ_ONLY ?? false,
     logLevel: flags.logLevel ?? env.BUGSECURE_LOG_LEVEL ?? 'info',
     requestTimeoutMs: env.BUGSECURE_REQUEST_TIMEOUT_MS ?? 20_000,
+    approvalPoll: {
+      intervalMs: env.BUGSECURE_APPROVAL_POLL_INTERVAL_MS ?? DEFAULT_APPROVAL_POLL.intervalMs,
+      budgetMs: env.BUGSECURE_APPROVAL_POLL_BUDGET_MS ?? DEFAULT_APPROVAL_POLL.budgetMs,
+    },
   };
 };
 
@@ -273,7 +321,7 @@ const readApprovalKey = (e: Env, clientSecret: string, development: boolean): st
   throw new ConfigError(
     'Hosted mode needs a dedicated approval key, shared by every instance: set BUGSECURE_MCP_APPROVAL_KEY_FILE or ' +
       'BUGSECURE_MCP_APPROVAL_KEY (at least 32 random characters, e.g. `openssl rand -base64 32`). It seals the ' +
-      'approval prompts of write tools; only a development server on a localhost resource may run without it.',
+      'state of write approvals in flight; only a development server on a localhost resource may run without it.',
   );
 };
 
@@ -315,9 +363,9 @@ export const loadHostedConfig = (
           : [resourceHost],
     host,
     port: flags.port ?? e.PORT ?? 8944,
-    // 1 MiB: the largest approvable write (MAX_APPROVAL_CHARACTERS, 50,000 characters) is at most
+    // 1 MiB: the largest write a tool accepts (a report of three 50,000-character fields) is at most
     // ~600 KB as JSON even when every character is non-ASCII and the client escapes it as \\uXXXX,
-    // plus the approval round's own fields.
+    // plus the approval round's own fields (the sealed request state and the elicitation answer).
     maxBodyBytes: e.BUGSECURE_MAX_BODY_BYTES ?? 1024 * 1024,
     tokenCacheSize: e.BUGSECURE_TOKEN_CACHE_SIZE ?? 1_000,
     rateLimit: {

@@ -55,6 +55,45 @@ describe('loadLocalConfig', () => {
   });
 });
 
+describe('the web app where writes are approved (BUGSECURE_WEB_URL)', () => {
+  it('is the production web app only for the production API, and otherwise unknown', () => {
+    expect(loadLocalConfig({}).webUrl).toBe('https://bugsecure.senintel.sn');
+    expect(loadLocalConfig({ BUGSECURE_API_URL: 'https://staging-api.example' }).webUrl).toBeUndefined();
+    expect(loadLocalConfig({}, { apiUrl: 'http://localhost:8943' }).webUrl).toBeUndefined();
+  });
+
+  it('is taken from the environment or the flag, as a canonical origin', () => {
+    expect(loadLocalConfig({ BUGSECURE_WEB_URL: 'https://Staging.example/' }).webUrl).toBe(
+      'https://staging.example',
+    );
+    expect(
+      loadLocalConfig({ BUGSECURE_WEB_URL: 'https://a.example' }, { webUrl: 'http://localhost:3000' }).webUrl,
+    ).toBe('http://localhost:3000');
+  });
+
+  it.each([
+    'https://web.example/app',
+    'http://web.example',
+    'https://u:p@web.example',
+    'https://web.example/?x',
+    'nope',
+  ])('refuses %s', (webUrl) => {
+    expect(() => loadLocalConfig({ BUGSECURE_WEB_URL: webUrl })).toThrow(ConfigError);
+  });
+
+  it('lets the decision poll be tuned within bounds', () => {
+    expect(loadLocalConfig({}).approvalPoll).toEqual({ intervalMs: 2_000, budgetMs: 45_000 });
+    expect(
+      loadLocalConfig({
+        BUGSECURE_APPROVAL_POLL_INTERVAL_MS: '500',
+        BUGSECURE_APPROVAL_POLL_BUDGET_MS: '20000',
+      }).approvalPoll,
+    ).toEqual({ intervalMs: 500, budgetMs: 20_000 });
+    expect(() => loadLocalConfig({ BUGSECURE_APPROVAL_POLL_BUDGET_MS: '60000' })).toThrow(ConfigError);
+    expect(() => loadLocalConfig({ BUGSECURE_APPROVAL_POLL_INTERVAL_MS: '10' })).toThrow(ConfigError);
+  });
+});
+
 describe('loadHostedConfig', () => {
   const KEY = 'k'.repeat(44);
   const base = { BUGSECURE_CLIENT_SECRET: 's3cret', BUGSECURE_MCP_APPROVAL_KEY: KEY };

@@ -11,6 +11,17 @@ describe('command line', () => {
     });
   });
 
+  it('takes the web app where writes are approved (--web-url) for every command', () => {
+    expect(parseCommandLine(['--web-url', 'https://web.test'])).toEqual({
+      kind: 'stdio',
+      common: { webUrl: 'https://web.test' },
+    });
+    expect(parseCommandLine(['serve', '--http', '--web-url', 'https://web.test'])).toMatchObject({
+      kind: 'http',
+      common: { webUrl: 'https://web.test' },
+    });
+  });
+
   it('parses serve --http', () => {
     expect(
       parseCommandLine(['serve', '--http', '--port', '9000', '--host', '0.0.0.0', '--log-level', 'debug']),

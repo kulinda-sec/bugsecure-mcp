@@ -47,7 +47,13 @@ const flags = (
   common: Extract<Command, { common: unknown }>['common'],
   extra: Partial<ConfigFlags> = {},
 ): ConfigFlags => {
-  return { apiUrl: common.apiUrl, readOnly: common.readOnly, logLevel: common.logLevel, ...extra };
+  return {
+    apiUrl: common.apiUrl,
+    webUrl: common.webUrl,
+    readOnly: common.readOnly,
+    logLevel: common.logLevel,
+    ...extra,
+  };
 };
 
 const localContext = async (common: Extract<Command, { common: unknown }>['common'], io: CliIo) => {

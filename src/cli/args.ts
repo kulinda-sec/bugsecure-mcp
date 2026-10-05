@@ -19,6 +19,7 @@ export type Command =
 
 export interface CommonFlags {
   readonly apiUrl?: string;
+  readonly webUrl?: string;
   readonly readOnly?: boolean;
   readonly logLevel?: LogLevel;
 }
@@ -38,6 +39,8 @@ Usage:
 
 Options:
   --api-url <url>      BugSecure API (default https://bugsecure-api.senintel.sn; env BUGSECURE_API_URL)
+  --web-url <origin>   BugSecure web app where writes are approved (default https://bugsecure.senintel.sn
+                       with the default API, otherwise none; env BUGSECURE_WEB_URL)
   --read-only          Never expose tools that change anything (env BUGSECURE_READ_ONLY=1)
   --log-level <level>  ${LOG_LEVELS.join('|')} (default info; logs go to stderr; env BUGSECURE_LOG_LEVEL)
   --scopes <list>      login: comma- or space-separated scopes (default: ${DEFAULT_LOGIN_SCOPES.join(',')})
@@ -87,6 +90,7 @@ export const parseCommandLine = (argv: readonly string[]): Command => {
       strict: true,
       options: {
         'api-url': { type: 'string' },
+        'web-url': { type: 'string' },
         'read-only': { type: 'boolean' },
         'log-level': { type: 'string' },
         scopes: { type: 'string' },
@@ -108,6 +112,7 @@ export const parseCommandLine = (argv: readonly string[]): Command => {
 
   const common: CommonFlags = {
     ...(values['api-url'] === undefined ? {} : { apiUrl: values['api-url'] }),
+    ...(values['web-url'] === undefined ? {} : { webUrl: values['web-url'] }),
     ...(values['read-only'] === undefined ? {} : { readOnly: values['read-only'] }),
     ...(values['log-level'] === undefined ? {} : { logLevel: parseLogLevel(values['log-level']) }),
   };
