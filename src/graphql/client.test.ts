@@ -465,6 +465,42 @@ describe('GraphQL client', () => {
     expect(await codeOf(client(blocked).request(SearchProgramsDocument, vars))).toBe('REQUEST_BLOCKED');
   });
 
+  it('shortens its timeout to `answerBy`, reporting running out as a timeout, not a cancellation', async () => {
+    const hanging: typeof globalThis.fetch = (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        // As fetch does: an already-aborted signal rejects at once, a later abort when it fires.
+        const reason = (): Error => {
+          const r: unknown = init?.signal?.reason;
+          return r instanceof Error ? r : new Error(String(r));
+        };
+        if (init?.signal?.aborted) reject(reason());
+        init?.signal?.addEventListener(
+          'abort',
+          () => {
+            reject(reason());
+          },
+          { once: true },
+        );
+      });
+    const c = client(hanging);
+    const started = Date.now();
+    const error: unknown = await c
+      .request(SearchProgramsDocument, vars, { answerBy: Date.now() + 50 })
+      .catch((e: unknown) => e);
+    expect(Date.now() - started).toBeLessThan(900);
+    expect(error).toBeInstanceOf(BugSecureError);
+    expect((error as BugSecureError).code).toBe('UPSTREAM_UNAVAILABLE');
+    expect((error as BugSecureError).message).toContain('timed out');
+    // The caller's own cancellation still passes through as it is.
+    const controller = new AbortController();
+    const cancelled = c.request(SearchProgramsDocument, vars, {
+      signal: controller.signal,
+      answerBy: Date.now() + 60_000,
+    });
+    controller.abort(new Error('cancelled'));
+    await expect(cancelled).rejects.toThrow('cancelled');
+  });
+
   it('maps timeouts, network errors, oversized and garbage responses', async () => {
     const timeout = vi.fn(() => Promise.reject(new DOMException('t', 'TimeoutError')));
     expect(await codeOf(client(timeout).request(SearchProgramsDocument, vars))).toBe('UPSTREAM_UNAVAILABLE');

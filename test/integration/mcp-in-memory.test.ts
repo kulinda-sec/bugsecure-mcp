@@ -2,8 +2,6 @@
  * End-to-end over the real SDK: an MCP Client talking to the production
  * server builder, on both protocol eras, with a fake API behind it.
  */
-import { randomBytes } from 'node:crypto';
-
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -12,12 +10,12 @@ import * as z from 'zod';
 import { BugSecureError } from '../../src/errors.js';
 import { silentLogger } from '../../src/logger.js';
 import { buildServer } from '../../src/server.js';
-import { ApprovalGate, ApprovalReplayGuard } from '../../src/tools/approval.js';
-import { defineTool } from '../../src/tools/define-tool.js';
+import { AddReportCommentDocument } from '../../src/graphql/generated.js';
+import { defineTool, mutation } from '../../src/tools/define-tool.js';
 import { ALL_TOOLS } from '../../src/tools/index.js';
 import { UNTRUSTED_TAG } from '../../src/untrusted.js';
 import { fakeGraphQL } from '../helpers/fake-graphql.js';
-import { connectTools, type Harness, textOf } from '../helpers/tool-harness.js';
+import { connectTools, type Harness, testGate, textOf } from '../helpers/tool-harness.js';
 
 const programs = {
   SearchPrograms: () => ({
@@ -46,18 +44,15 @@ const fakeWrite = defineTool({
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   input: z.object({}),
   output: z.object({ ok: z.boolean() }),
-  approval: () => ({ action: 'do a fake write', audience: 'Nobody.', irreversible: false, fields: [] }),
+  payload: () => ({
+    action: 'do a fake write',
+    parts: [
+      mutation(AddReportCommentDocument, { input: { reportId: 'r1', content: 'x', isInternal: false } }),
+    ],
+  }),
   handler: () => Promise.resolve({ data: { ok: true } }),
 });
 const toolsWithWrite = [...ALL_TOOLS, fakeWrite];
-
-const testApprovals = (): ApprovalGate =>
-  new ApprovalGate({
-    key: randomBytes(32),
-    principal: 'test',
-    replay: new ApprovalReplayGuard(),
-    logger: silentLogger,
-  });
 
 let harness: Harness | undefined;
 afterEach(async () => {
@@ -164,7 +159,7 @@ describe('2026-07-28 wire format', () => {
         logger: silentLogger,
         grantedScopes: () => Promise.resolve(new Set(['programs:read'] as const)),
         readOnly: false,
-        approvals: testApprovals(),
+        approvals: testGate(),
       }),
     );
     try {
@@ -222,7 +217,7 @@ describe('MCP 2025-era clients (initialize handshake)', () => {
       logger: silentLogger,
       grantedScopes: () => Promise.resolve(new Set(['programs:read'] as const)),
       readOnly: false,
-      approvals: testApprovals(),
+      approvals: testGate(),
     });
     const client = new Client({ name: 'in-memory', version: '0.0.0' });
     await server.connect(serverTransport);

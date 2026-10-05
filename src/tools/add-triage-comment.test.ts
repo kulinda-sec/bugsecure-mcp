@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
+import {
+  FAKE_WEB_URL,
+  fakeAgentApprovals,
+  fakeGraphQL,
+  lookups,
+  type OperationHandler,
+  withoutLookups,
+} from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
 
@@ -11,6 +18,14 @@ const posted = (isInternal: boolean) => ({
   addReportComment: { id: 'c9', reportId: 'r1', isInternal, createdAt: '2026-09-21T10:00:00.000Z' },
 });
 
+const api = (comment: OperationHandler, overrides: Record<string, OperationHandler> = {}) => {
+  const approvals = fakeAgentApprovals('approve');
+  return {
+    approvals,
+    graphql: fakeGraphQL({ ...lookups(), ...approvals.handlers, AddTriageComment: comment, ...overrides }),
+  };
+};
+
 let harness: Harness | undefined;
 afterEach(async () => {
   await harness?.close();
@@ -18,8 +33,8 @@ afterEach(async () => {
 });
 
 describe('add_triage_comment', () => {
-  it('posts an organization-only (internal) note by default, and says so in the approval', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), AddTriageComment: () => posted(true) });
+  it('registers an organization-only (internal) note by default, and says so in the message', async () => {
+    const { graphql, approvals } = api(() => posted(true));
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
 
     const result = await harness.call('add_triage_comment', {
@@ -28,24 +43,22 @@ describe('add_triage_comment', () => {
     });
 
     expect(result.isError).toBeFalsy();
+    const input = { reportId: 'r1', content: 'Likely dupe.', isInternal: true };
+    expect(approvals.created[0]?.parts).toEqual([{ operation: 'addReportComment', arguments: { input } }]);
     expect(withoutLookups(graphql.calls)).toEqual([
       {
         operation: 'AddTriageComment',
-        variables: {
-          input: { reportId: 'r1', content: 'Likely dupe.', isInternal: true },
-          clientRequestId: REQUEST_ID,
-        },
+        variables: { input, clientRequestId: approvals.created[0]?.clientRequestId },
       },
     ]);
     expect(result.structuredContent).toMatchObject({ comment: { id: 'c9', internal: true } });
-    const message = harness.prompts[0]?.message ?? '';
-    expect(message).toContain('internal note');
-    expect(message).toContain('The researcher does NOT see it.');
-    expect(message).toContain('Likely dupe.');
+    expect(harness.prompts[0]?.url).toBe(`${FAKE_WEB_URL}/agent-approvals/${approvals.created[0]?.id ?? ''}`);
+    expect(harness.prompts[0]?.message).toContain('add an internal note to a report, as your organisation');
+    expect(harness.prompts[0]?.message).not.toContain('Likely dupe.');
   });
 
-  it('posts to the researcher only with visibleToResearcher: true, shown prominently', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), AddTriageComment: () => posted(false) });
+  it('posts to the researcher only with visibleToResearcher: true, said in the message', async () => {
+    const { graphql, approvals } = api(() => posted(false));
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
 
     const result = await harness.call('add_triage_comment', {
@@ -54,30 +67,30 @@ describe('add_triage_comment', () => {
       visibleToResearcher: true,
     });
 
+    expect(approvals.created[0]?.parts[0]?.arguments).toMatchObject({ input: { isInternal: false } });
     expect(withoutLookups(graphql.calls)[0]?.variables).toMatchObject({ input: { isInternal: false } });
     expect(result.structuredContent).toMatchObject({ comment: { internal: false } });
-    const message = harness.prompts[0]?.message ?? '';
-    // The audience line comes right after the headline, before the payload.
-    expect(message.split('\n')[2]).toBe(
-      'VISIBLE TO THE RESEARCHER, who is notified. Also seen by your organisation.',
+    expect(harness.prompts[0]?.message).toContain(
+      'post a comment the researcher sees on a report, as your organisation',
     );
   });
 
-  it('sends nothing when the user declines', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), AddTriageComment: () => posted(true) });
+  it('sends nothing when the user does not open the review page', async () => {
+    const { graphql, approvals } = api(() => posted(true));
     harness = await connectTools({
       graphql,
       grantedScopes: [...TRIAGER],
       viewerId: 'triager-1',
-      approve: 'decline',
+      open: 'decline',
     });
 
     const result = await harness.call('add_triage_comment', { reportId: 'r1', content: 'x' });
     expect(result.isError).toBe(true);
+    expect(approvals.created).toHaveLength(1);
     expect(withoutLookups(graphql.calls)).toHaveLength(0);
   });
 
-  it('rejects invalid arguments before calling the API', async () => {
+  it('rejects invalid arguments before registering anything', async () => {
     const graphql = fakeGraphQL({});
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
 
@@ -86,18 +99,15 @@ describe('add_triage_comment', () => {
       (await harness.call('add_triage_comment', { reportId: 'r1', content: 'x', visibleToResearcher: 'yes' }))
         .isError,
     ).toBe(true);
-    expect(withoutLookups(graphql.calls)).toHaveLength(0);
+    expect(graphql.calls).toHaveLength(0);
   });
 
   it('explains an organization that has not opted in to AI triage access', async () => {
-    const graphql = fakeGraphQL({
-      ...lookups(),
-      AddTriageComment: () => {
-        throw new BugSecureError(
-          'ORG_AI_ACCESS_DISABLED',
-          'This organization has not enabled AI triage access.',
-        );
-      },
+    const { graphql } = api(() => {
+      throw new BugSecureError(
+        'ORG_AI_ACCESS_DISABLED',
+        'This organization has not enabled AI triage access.',
+      );
     });
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
 
@@ -105,24 +115,20 @@ describe('add_triage_comment', () => {
       'AI triage access',
     );
   });
-  it('refuses a BugSecure staff account', async () => {
-    const graphql = fakeGraphQL({
-      ...lookups({ roles: ['PLATFORM_ROLE_A'] }),
-      AddTriageComment: () => posted(true),
-    });
+
+  it('refuses a BugSecure staff account before registering anything', async () => {
+    const { graphql, approvals } = api(() => posted(true), lookups({ roles: ['PLATFORM_ROLE_A'] }));
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
     const result = await harness.call('add_triage_comment', { reportId: 'r1', content: 'hi' });
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain('BugSecure staff role;');
     expect(harness.prompts).toHaveLength(0);
+    expect(approvals.created).toEqual([]);
     expect(withoutLookups(graphql.calls)).toEqual([]);
   });
 
   it('refuses the user’s own report (it would post as the researcher), pointing at add_report_comment', async () => {
-    const graphql = fakeGraphQL({
-      ...lookups({ reporterId: 'triager-1' }),
-      AddTriageComment: () => posted(true),
-    });
+    const { graphql, approvals } = api(() => posted(true), lookups({ reporterId: 'triager-1' }));
     harness = await connectTools({
       graphql,
       grantedScopes: [...TRIAGER, 'triage:read'],
@@ -131,10 +137,11 @@ describe('add_triage_comment', () => {
     const result = await harness.call('add_triage_comment', { reportId: 'r1', content: 'hi' });
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain('add_report_comment');
+    expect(approvals.created).toEqual([]);
   });
 
   it('refuses when it could post on either side and cannot read the report to tell which', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), AddTriageComment: () => posted(true) });
+    const { graphql, approvals } = api(() => posted(true));
     harness = await connectTools({
       graphql,
       grantedScopes: [...TRIAGER, 'reports:write'],
@@ -145,6 +152,7 @@ describe('add_triage_comment', () => {
     expect(textOf(result)).toMatch(
       /^Nothing was sent: this connection can comment as a researcher and as an organisation/,
     );
+    expect(approvals.created).toEqual([]);
     expect(withoutLookups(graphql.calls)).toEqual([]);
   });
 });

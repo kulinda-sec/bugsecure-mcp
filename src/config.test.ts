@@ -98,6 +98,13 @@ describe('loadHostedConfig', () => {
   const KEY = 'k'.repeat(44);
   const base = { BUGSECURE_CLIENT_SECRET: 's3cret', BUGSECURE_MCP_APPROVAL_KEY: KEY };
 
+  it('refuses an API timeout under 5 s: the request deadline it sets could not hold an approval and a write', () => {
+    expect(() => loadHostedConfig({ ...base, BUGSECURE_REQUEST_TIMEOUT_MS: '4999' })).toThrow(
+      /at least 5000/,
+    );
+    expect(loadHostedConfig({ ...base, BUGSECURE_REQUEST_TIMEOUT_MS: '5000' }).requestTimeoutMs).toBe(5_000);
+  });
+
   it('requires a client secret', () => {
     expect(() => loadHostedConfig({})).toThrow(/client secret/);
   });

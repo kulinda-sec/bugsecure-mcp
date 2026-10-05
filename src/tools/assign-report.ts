@@ -10,9 +10,9 @@ import {
 import { untrusted } from '../untrusted.js';
 import { id, idInput, timestamp } from './shared/common.js';
 import { UserRefSchema } from './shared/report.js';
-import { orgSideReport, reportContext } from './shared/report-ref.js';
+import { orgSideReport } from './shared/report-ref.js';
 import { assertNotPlatformStaff } from './shared/viewer.js';
-import { defineTool, type ToolContext } from './define-tool.js';
+import { defineTool, mutation, type ToolContext } from './define-tool.js';
 
 const notStaff = (context: ToolContext): Promise<void> =>
   assertNotPlatformStaff(context, async () => {
@@ -27,7 +27,7 @@ const readRef =
 
 /**
  * Only to the signed-in user: a connected app cannot list an organisation's
- * members (refused to OAuth clients), so it could not show who another id is.
+ * members (refused to OAuth clients), so it could not name another one.
  */
 const self = (viewerId: string | undefined): string => {
   if (viewerId === undefined)
@@ -44,10 +44,10 @@ export const assignReport = defineTool({
   description:
     'Assign a report of an opted-in organisation the user belongs to to the signed-in user, as the ' +
     'organisation’s triager for it, replacing any current assignee. Assigning to someone else is done on the ' +
-    'BugSecure website. The researcher is not notified. The user approves it first.',
+    'BugSecure website. The researcher is not notified. The user approves it on BugSecure first.',
   // profile:read: the account's roles are checked (BugSecure staff are refused). triage:read: the report
-  // is read first, to check it was submitted to your organisation (orgSideReport) and to show it in the
-  // approval; a report that cannot be read is refused, not written blind.
+  // is read first, to check it was submitted to your organisation (orgSideReport); a report that cannot
+  // be read is refused, not written blind.
   requiredScopes: ['triage:write', 'profile:read', 'triage:read'],
   // Destructive: replaces the current assignee. Idempotent: assigning yourself again changes nothing.
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
@@ -55,34 +55,17 @@ export const assignReport = defineTool({
   output: z.object({
     report: z.object({ id: id(), assignedTriage: UserRefSchema.nullable(), updatedAt: timestamp() }),
   }),
-  approval: async (input, context) => {
-    const me = self(context.viewerId);
-    await notStaff(context);
-    const report = await orgSideReport(context, readRef(context, input.reportId));
-    return {
-      action: `assign report ${input.reportId} to yourself, as your organisation`,
-      audience: 'Seen by your organisation. The researcher is not notified.',
-      irreversible: false,
-      context: [
-        ...reportContext(report, { researcher: true }),
-        ['Assigned now', report.assignedTriage?.username ?? '(nobody)'],
-      ],
-      fields: [
-        ['Report', input.reportId],
-        ['Assignee', `you (${me})`],
-      ],
-    };
-  },
-  async handler(input, context) {
-    const { graphql, signal, logger, clientRequestId } = context;
+  payload: async (input, context) => {
     const me = self(context.viewerId);
     await notStaff(context);
     await orgSideReport(context, readRef(context, input.reportId));
-    const { assignTriageAnalyst: r } = await graphql.request(
-      AssignReportDocument,
-      { reportId: input.reportId, triageUserId: me, clientRequestId },
-      { signal },
-    );
+    return {
+      action: 'assign a report to you, as your organisation’s triager',
+      parts: [mutation(AssignReportDocument, { reportId: input.reportId, triageUserId: me })],
+    };
+  },
+  async handler(_input, { approved, signal, logger }) {
+    const { assignTriageAnalyst: r } = await approved.part.send({ signal });
     logger.info('report assigned', { reportId: r.id });
     return {
       data: {

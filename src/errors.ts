@@ -20,6 +20,8 @@ export type ErrorCode =
   | 'CONFLICT'
   | 'REQUEST_IN_PROGRESS'
   | 'REQUEST_KEY_REUSED'
+  | 'APPROVAL_REQUIRED'
+  | 'CALL_DEADLINE'
   | 'RATE_LIMITED'
   | 'REQUEST_BLOCKED'
   | 'CREDENTIALS_BUSY'
@@ -174,6 +176,10 @@ const hint = (
       );
     case 'REQUEST_KEY_REUSED':
       return 'Do not retry this call. If the user still wants the change, they approve it again.';
+    case 'APPROVAL_REQUIRED':
+      // The mapping in graphql/errors.ts sets the full hint (check first: another request may
+      // have used the approval); this is the fallback for an error raised without one.
+      return 'Do not retry this call. If the user still wants the change, call the tool again so BugSecure can ask them to approve it.';
     case 'UPSTREAM_OUTDATED':
       return (
         'Nothing was written. Read tools still work; for changes, ask the user to use the BugSecure ' +
@@ -181,6 +187,11 @@ const hint = (
       );
     case 'UPSTREAM_UNAVAILABLE':
       return 'The BugSecure API could not be reached; retry shortly.';
+    case 'CALL_DEADLINE':
+      return (
+        'Too little time was left in this call for another write before the MCP client gives up on it, so ' +
+        'nothing more was sent. Call the tool again for what remains; it is approved anew.'
+      );
     case 'OAUTH_FIELD_DENIED':
     case 'FORBIDDEN':
     case 'NOT_FOUND':

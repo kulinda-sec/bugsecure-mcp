@@ -13,6 +13,12 @@ import { LOG_LEVELS, type LogLevel } from './logger.js';
 export const DEFAULT_API_URL = 'https://bugsecure-api.senintel.sn';
 /** The BugSecure web app that goes with `DEFAULT_API_URL`: where approvals are reviewed. */
 export const DEFAULT_WEB_URL = 'https://bugsecure.senintel.sn';
+/**
+ * The least API timeout the hosted server accepts: its request deadline is
+ * three times the timeout and must hold a wait for the user's decision, one
+ * write attempt and the answer.
+ */
+export const HOSTED_MIN_REQUEST_TIMEOUT_MS = 5_000;
 export const DEFAULT_MCP_RESOURCE = 'https://bugsecure-mcp.senintel.sn/mcp';
 export const LOCAL_CLIENT_ID = 'bugsecure-mcp-cli';
 export const HOSTED_CLIENT_ID = 'bugsecure-mcp-hosted';
@@ -332,6 +338,12 @@ export const loadHostedConfig = (
   const e = parseEnv(env);
   const base = common(e, flags);
   const resource = canonicalUrl(e.BUGSECURE_MCP_RESOURCE ?? DEFAULT_MCP_RESOURCE, 'BUGSECURE_MCP_RESOURCE');
+  if (base.requestTimeoutMs < HOSTED_MIN_REQUEST_TIMEOUT_MS) {
+    throw new ConfigError(
+      `BUGSECURE_REQUEST_TIMEOUT_MS must be at least ${String(HOSTED_MIN_REQUEST_TIMEOUT_MS)} for the hosted server ` +
+        '(its request deadline is three times this value and must leave time to wait for an approval and perform one write)',
+    );
+  }
   if (resource === base.apiUrl) {
     throw new ConfigError('BUGSECURE_MCP_RESOURCE must differ from the API URL (tokens are audience-bound)');
   }

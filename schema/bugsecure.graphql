@@ -51,6 +51,40 @@ enum AdjudicationSide {
   PLATFORM
 }
 
+enum AgentApprovableOperation {
+  addReportComment
+  adjudicateReport
+  assignTriageAnalyst
+  markAllNotificationsAsRead
+  markNotificationAsRead
+  raiseAppeal
+  saveReportDisclosure
+  submitReport
+  updateReportStatus
+  updateResearcherProfile
+}
+
+type AgentApprovalModel {
+  clientRequestId: String!
+  expiresAt: DateTime!
+  id: ID!
+  reviewUrl: String!
+  status: AgentApprovalStatus!
+}
+
+input AgentApprovalPartInput {
+  arguments: JSON!
+  operation: AgentApprovableOperation!
+}
+
+enum AgentApprovalStatus {
+  APPROVED
+  CONSUMED
+  DECLINED
+  EXPIRED
+  PENDING
+}
+
 enum AmountBasis {
   ASSESSOR_OVERRIDE
   GRID_FLOOR
@@ -113,6 +147,11 @@ type CertificateVerificationModel {
   signature: String
   signedAt: DateTime
   status: String!
+}
+
+input CreateAgentApprovalInput {
+  clientDigest: String!
+  parts: [AgentApprovalPartInput!]!
 }
 
 type CriticalReviewModel {
@@ -197,6 +236,7 @@ type Mutation {
   addReportComment(clientRequestId: String, input: AddCommentInput!): ReportCommentModel!
   adjudicateReport(clientRequestId: String, input: AdjudicateReportInput!): PayoutCertificateModel
   assignTriageAnalyst(clientRequestId: String, reportId: ID!, triageUserId: ID!): ReportModel!
+  createAgentApproval(clientRequestId: String, input: CreateAgentApprovalInput!): AgentApprovalModel!
   markAllNotificationsAsRead(clientRequestId: String): Boolean!
   markNotificationAsRead(clientRequestId: String, id: ID!): Boolean!
   raiseAppeal(clientRequestId: String, input: RaiseAppealInput!): SeverityAppealModel!
@@ -216,6 +256,7 @@ type NotificationModel {
 }
 
 enum NotificationType {
+  AGENT_APPROVAL_REQUESTED
   APPEAL_DECIDED
   APPEAL_RAISED
   BADGE_EARNED
@@ -233,7 +274,9 @@ enum NotificationType {
   SETTLEMENT_ATTESTED
   SETTLEMENT_CONFIRMED
   SETTLEMENT_DISPUTED
+  SETTLEMENT_PROOF_UPDATED
   SUBSCRIPTION_ACTIVATED
+  SUPPORT_MESSAGE
   USER_PENDING_APPROVAL
 }
 
@@ -384,11 +427,13 @@ type PublicResearcherProfileModel {
 }
 
 type Query {
+  agentApproval(id: ID!): AgentApprovalModel!
   badgeCatalog: [BadgeProgressModel!]!
   certificateSigningKeys: PublicKeySetModel!
   checkDuplicates(description: String!, programId: ID!, title: String!): [ReportModel!]!
   leaderboard(country: String, limit: Int! = 20, timeRange: String): [LeaderboardEntryModel!]!
   me: UserModel!
+  myAgentApprovals(clientDigest: String, statuses: [AgentApprovalStatus!], take: Int): [AgentApprovalModel!]!
   myCertificates: [PayoutCertificateModel!]!
   myInvitedPrograms(skip: Int! = 0, take: Int! = 20): [ProgramModel!]!
   myKycStatus: KycStatusModel!

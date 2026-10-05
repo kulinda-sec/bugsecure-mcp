@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
+import {
+  FAKE_WEB_URL,
+  fakeAgentApprovals,
+  fakeGraphQL,
+  REQUEST_ID,
+  withoutLookups,
+} from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
-import { revealForReview } from '../untrusted.js';
-import { CLIENT_REQUEST_ID } from './shared/request-id.js';
 
 const args = {
   programId: 'p1',
@@ -26,6 +30,11 @@ const created = {
   program: { id: 'p1', title: 'Acme web', slug: 'acme-web' },
 };
 
+const api = (submit: () => unknown = () => ({ submitReport: created })) => {
+  const approvals = fakeAgentApprovals('approve');
+  return { approvals, graphql: fakeGraphQL({ ...approvals.handlers, SubmitReport: submit }) };
+};
+
 let harness: Harness | undefined;
 afterEach(async () => {
   await harness?.close();
@@ -33,40 +42,37 @@ afterEach(async () => {
 });
 
 describe('submit_report', () => {
-  it('shows the user the exact report, then submits exactly one and returns its id', async () => {
-    const graphql = fakeGraphQL({ SubmitReport: () => ({ submitReport: created }) });
+  it('registers the exact report for review, sends the user to its page, then submits exactly one and returns its id', async () => {
+    const { graphql, approvals } = api();
     harness = await connectTools({ graphql, grantedScopes: ['reports:write'] });
 
     const result = await harness.call('submit_report', args);
 
     expect(result.isError).toBeFalsy();
+    const expected = {
+      programId: 'p1',
+      title: args.title,
+      severity: 'HIGH',
+      description: args.description,
+      stepsToReproduce: args.stepsToReproduce,
+      impact: args.impact,
+      remediation: null,
+      cvssVector: args.cvssVector,
+    };
+    // What the user reviews on BugSecure is exactly what is then sent.
+    expect(approvals.created).toHaveLength(1);
+    expect(approvals.created[0]?.parts).toEqual([
+      { operation: 'submitReport', arguments: { input: expected } },
+    ]);
     expect(harness.prompts).toHaveLength(1);
-    const message = harness.prompts[0]?.message ?? '';
-    expect(message).toContain('submit a vulnerability report to programme p1');
-    for (const value of [args.title, args.description, args.stepsToReproduce, args.impact, args.cvssVector]) {
-      // Shown line by line, each line prefixed, markup openers escaped (`<script>` → `\<script>`).
-      for (const line of revealForReview(value).split('\n')) expect(message).toContain(`│ ${line}`);
-    }
-    expect(message).toContain('│ 1. Set bio to \\<script>alert(1)\\</script>');
-    expect(message).toContain('It carries no attachments.');
-    expect(message).toContain('this connection lacks programs:read');
-    expect(message).toContain('cannot be undone');
-    expect(graphql.calls).toEqual([
+    expect(harness.prompts[0]?.mode).toBe('url');
+    expect(harness.prompts[0]?.url).toBe(`${FAKE_WEB_URL}/agent-approvals/${approvals.created[0]?.id ?? ''}`);
+    expect(harness.prompts[0]?.message).toContain('wants to submit a vulnerability report to a programme');
+    expect(harness.prompts[0]?.message).not.toContain(args.title);
+    expect(withoutLookups(graphql.calls)).toEqual([
       {
         operation: 'SubmitReport',
-        variables: {
-          clientRequestId: REQUEST_ID,
-          input: {
-            programId: 'p1',
-            title: args.title,
-            severity: 'HIGH',
-            description: args.description,
-            stepsToReproduce: args.stepsToReproduce,
-            impact: args.impact,
-            remediation: null,
-            cvssVector: args.cvssVector,
-          },
-        },
+        variables: { clientRequestId: approvals.created[0]?.clientRequestId, input: expected },
       },
     ]);
     const { report } = result.structuredContent as { report: { id: string; title: string } };
@@ -75,41 +81,53 @@ describe('submit_report', () => {
   });
 
   it('sends optional fields as null and tolerates a hidden programme', async () => {
-    const graphql = fakeGraphQL({ SubmitReport: () => ({ submitReport: { ...created, program: null } }) });
+    const { graphql } = api(() => ({ submitReport: { ...created, program: null } }));
     harness = await connectTools({ graphql, grantedScopes: ['reports:write'] });
 
     const { cvssVector: _omit, ...rest } = args;
     const result = await harness.call('submit_report', { ...rest, remediation: 'Escape output.' });
 
-    expect(graphql.calls[0]?.variables).toMatchObject({
+    expect(withoutLookups(graphql.calls)[0]?.variables).toMatchObject({
       input: { remediation: 'Escape output.', cvssVector: null },
     });
     expect((result.structuredContent as { report: { program: unknown } }).report.program).toBeNull();
   });
 
-  it.each(['decline', 'cancel', 'accept-unticked'] as const)(
-    'sends nothing when the user answers the approval with %s',
-    async (approve) => {
-      const graphql = fakeGraphQL({ SubmitReport: () => ({ submitReport: created }) });
-      harness = await connectTools({ graphql, grantedScopes: ['reports:write'], approve });
+  it.each(['decline', 'cancel'] as const)(
+    'sends nothing when the user does not open the review page (%s)',
+    async (open) => {
+      const { graphql, approvals } = api();
+      harness = await connectTools({ graphql, grantedScopes: ['reports:write'], open });
 
       const result = await harness.call('submit_report', args);
 
       expect(result.isError).toBe(true);
       expect(textOf(result)).toMatch(/^Nothing was sent/);
-      expect(graphql.calls).toHaveLength(0);
+      expect(approvals.created).toHaveLength(1);
+      expect(withoutLookups(graphql.calls)).toHaveLength(0);
     },
   );
 
-  it('is unavailable in a client that cannot ask the user (no elicitation capability)', async () => {
-    const graphql = fakeGraphQL({ SubmitReport: () => ({ submitReport: created }) });
-    harness = await connectTools({ graphql, grantedScopes: ['reports:write'], approve: 'none' });
+  it('sends nothing when the user declines on BugSecure', async () => {
+    const approvals = fakeAgentApprovals('decline');
+    const graphql = fakeGraphQL({ ...approvals.handlers, SubmitReport: () => ({ submitReport: created }) });
+    harness = await connectTools({ graphql, grantedScopes: ['reports:write'] });
+    const result = await harness.call('submit_report', args);
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/^Nothing was sent: the user declined/);
+    expect(withoutLookups(graphql.calls)).toHaveLength(0);
+  });
+
+  it('in a client that cannot open URLs, registers the report and names the menu path; nothing is sent', async () => {
+    const { graphql, approvals } = api();
+    harness = await connectTools({ graphql, grantedScopes: ['reports:write'], open: 'none' });
 
     const result = await harness.call('submit_report', args);
 
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain('does not support approval prompts');
-    expect(graphql.calls).toHaveLength(0);
+    expect(textOf(result)).toContain('Settings → Agent approvals');
+    expect(approvals.created).toHaveLength(1);
+    expect(withoutLookups(graphql.calls)).toHaveLength(0);
   });
 
   it('no longer accepts a model-supplied confirmation flag', async () => {
@@ -127,7 +145,7 @@ describe('submit_report', () => {
     ['with a bad programme id', { programId: 'p1; drop' }],
     ['with a huge impact', { impact: 'x'.repeat(10_001) }],
     ['with an escape sequence in the title', { title: 'Stored XSS \u001B[2K in bio' }],
-  ])('rejects a report %s before calling the API', async (_label, patch) => {
+  ])('rejects a report %s before registering anything', async (_label, patch) => {
     const graphql = fakeGraphQL({});
     harness = await connectTools({ graphql, grantedScopes: ['reports:write'] });
 
@@ -138,13 +156,11 @@ describe('submit_report', () => {
   });
 
   it('relays the API refusing a submission (e.g. terms not accepted)', async () => {
-    const graphql = fakeGraphQL({
-      SubmitReport: () => {
-        throw new BugSecureError(
-          'FORBIDDEN',
-          'BugSecure denied access: You must accept the current programme terms before submitting',
-        );
-      },
+    const { graphql } = api(() => {
+      throw new BugSecureError(
+        'FORBIDDEN',
+        'BugSecure denied access: You must accept the current programme terms before submitting',
+      );
     });
     harness = await connectTools({ graphql, grantedScopes: ['reports:write'] });
 
@@ -152,12 +168,10 @@ describe('submit_report', () => {
   });
 
   it('turns an insufficient-scope API error into actionable guidance', async () => {
-    const graphql = fakeGraphQL({
-      SubmitReport: () => {
-        throw new BugSecureError('INSUFFICIENT_SCOPE', 'missing permission', {
-          requiredScopes: ['reports:write'],
-        });
-      },
+    const { graphql } = api(() => {
+      throw new BugSecureError('INSUFFICIENT_SCOPE', 'missing permission', {
+        requiredScopes: ['reports:write'],
+      });
     });
     harness = await connectTools({ graphql, grantedScopes: ['reports:write'] });
 
@@ -174,36 +188,35 @@ describe('submit_report', () => {
     });
     expect(tool?.description).toContain('No attachments');
     expect(tool?.description).toContain('platform and programme terms');
+    expect(tool?.description).toContain('approves the exact report on BugSecure');
   });
 
-  it('names the programme in the approval when programs:read is granted', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), SubmitReport: () => ({ submitReport: created }) });
-    harness = await connectTools({ graphql, grantedScopes: ['reports:write', 'programs:read'] });
-    await harness.call('submit_report', args);
-    expect(harness.prompts[0]?.message).toContain('Programme:\n│ Acme web (run by Acme)');
-  });
-
-  it('sends one write with an idempotency key, and no duplicate lookup, whatever it may read', async () => {
-    // A replayed approval is harmless at the API (same key, same arguments: one report), so
-    // submitting no longer looks for a recent report with the same title first.
-    const graphql = fakeGraphQL({ SubmitReport: () => ({ submitReport: created }) });
-    harness = await connectTools({ graphql, grantedScopes: ['reports:write', 'reports:read'] });
+  it('sends one write with the approval’s key, and no lookup, whatever it may read', async () => {
+    const { graphql, approvals } = api();
+    harness = await connectTools({
+      graphql,
+      grantedScopes: ['reports:write', 'reports:read', 'programs:read'],
+    });
     expect((await harness.call('submit_report', args)).isError).toBeFalsy();
-    expect(graphql.calls.map((c) => c.operation)).toEqual(['SubmitReport']);
-    expect(graphql.calls[0]?.variables.clientRequestId).toEqual(expect.stringMatching(CLIENT_REQUEST_ID));
+    expect(withoutLookups(graphql.calls).map((c) => c.operation)).toEqual(['SubmitReport']);
+    expect(graphql.calls.map((c) => c.operation)).not.toContain('GetProgramRef');
+    expect(withoutLookups(graphql.calls)[0]?.variables.clientRequestId).toEqual(REQUEST_ID);
+    expect(withoutLookups(graphql.calls)[0]?.variables.clientRequestId).toBe(
+      approvals.created[0]?.clientRequestId,
+    );
   });
 
   it('normalises Windows line endings and refuses control characters', async () => {
-    const graphql = fakeGraphQL({ SubmitReport: () => ({ submitReport: created }) });
+    const { graphql } = api();
     harness = await connectTools({ graphql, grantedScopes: ['reports:write'] });
     await harness.call('submit_report', { ...args, stepsToReproduce: '1. Open it.\r\n2. Look at it.' });
-    expect(graphql.calls[0]?.variables).toMatchObject({
+    expect(withoutLookups(graphql.calls)[0]?.variables).toMatchObject({
       input: { stepsToReproduce: '1. Open it.\n2. Look at it.' },
     });
-    for (const bad of ['\u001B[31mred', 'a\u0008b', 'x\u2028y', 'nel\u0085']) {
+    for (const bad of ['\u001B[31mred', 'a\u0008b', 'x y', 'nel\u0085']) {
       const result = await harness.call('submit_report', { ...args, impact: `Session theft ${bad}` });
       expect(result.isError, JSON.stringify(bad)).toBe(true);
     }
-    expect(graphql.calls).toHaveLength(1);
+    expect(withoutLookups(graphql.calls)).toHaveLength(1);
   });
 });

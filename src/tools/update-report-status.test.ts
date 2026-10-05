@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
+import {
+  FAKE_WEB_URL,
+  fakeAgentApprovals,
+  fakeGraphQL,
+  lookups,
+  type OperationHandler,
+  withoutLookups,
+} from '../../test/helpers/fake-graphql.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
 
@@ -11,6 +18,14 @@ const updated = (status: string, duplicateOfId: string | null = null) => ({
   updateReportStatus: { id: 'r1', status, duplicateOfId, updatedAt: '2026-09-21T10:00:00.000Z' },
 });
 
+const api = (update: OperationHandler, overrides: Record<string, OperationHandler> = {}) => {
+  const approvals = fakeAgentApprovals('approve');
+  return {
+    approvals,
+    graphql: fakeGraphQL({ ...lookups(), ...approvals.handlers, UpdateReportStatus: update, ...overrides }),
+  };
+};
+
 let harness: Harness | undefined;
 afterEach(async () => {
   await harness?.close();
@@ -18,8 +33,8 @@ afterEach(async () => {
 });
 
 describe('update_report_status', () => {
-  it('moves a report with a reason', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), UpdateReportStatus: () => updated('NEEDS_MORE_INFO') });
+  it('registers the exact move for review, then moves the report with a reason', async () => {
+    const { graphql, approvals } = api(() => updated('NEEDS_MORE_INFO'));
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
 
     const result = await harness.call('update_report_status', {
@@ -29,25 +44,29 @@ describe('update_report_status', () => {
     });
 
     expect(result.isError).toBeFalsy();
+    const input = {
+      reportId: 'r1',
+      status: 'NEEDS_MORE_INFO',
+      reason: 'Which account did you use?',
+      duplicateOfId: null,
+    };
+    expect(approvals.created[0]?.parts).toEqual([{ operation: 'updateReportStatus', arguments: { input } }]);
+    expect(harness.prompts[0]?.url).toBe(`${FAKE_WEB_URL}/agent-approvals/${approvals.created[0]?.id ?? ''}`);
+    expect(harness.prompts[0]?.message).toContain(
+      'change the triage status of a report, as your organisation',
+    );
+    expect(harness.prompts[0]?.message).not.toContain('NEEDS_MORE_INFO');
     expect(withoutLookups(graphql.calls)).toEqual([
       {
         operation: 'UpdateReportStatus',
-        variables: {
-          clientRequestId: REQUEST_ID,
-          input: {
-            reportId: 'r1',
-            status: 'NEEDS_MORE_INFO',
-            reason: 'Which account did you use?',
-            duplicateOfId: null,
-          },
-        },
+        variables: { clientRequestId: approvals.created[0]?.clientRequestId, input },
       },
     ]);
     expect(result.structuredContent).toMatchObject({ report: { id: 'r1', status: 'NEEDS_MORE_INFO' } });
   });
 
   it('requires a reason of at least 20 characters for NOT_APPLICABLE and OUT_OF_SCOPE', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), UpdateReportStatus: () => updated('NOT_APPLICABLE') });
+    const { graphql, approvals } = api(() => updated('NOT_APPLICABLE'));
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
 
     for (const status of ['NOT_APPLICABLE', 'OUT_OF_SCOPE']) {
@@ -57,6 +76,7 @@ describe('update_report_status', () => {
           .isError,
       ).toBe(true);
     }
+    expect(approvals.created).toEqual([]);
     expect(withoutLookups(graphql.calls)).toEqual([]);
 
     const result = await harness.call('update_report_status', {
@@ -68,7 +88,7 @@ describe('update_report_status', () => {
   });
 
   it('requires duplicateOfId exactly when marking DUPLICATE', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), UpdateReportStatus: () => updated('DUPLICATE', 'r0') });
+    const { graphql } = api(() => updated('DUPLICATE', 'r0'));
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
 
     expect(
@@ -96,7 +116,7 @@ describe('update_report_status', () => {
     });
   });
 
-  it('rejects invalid arguments before calling the API', async () => {
+  it('rejects invalid arguments before registering anything', async () => {
     const graphql = fakeGraphQL({});
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
 
@@ -115,15 +135,12 @@ describe('update_report_status', () => {
         })
       ).isError,
     ).toBe(true);
-    expect(withoutLookups(graphql.calls)).toHaveLength(0);
+    expect(graphql.calls).toHaveLength(0);
   });
 
   it('relays an invalid transition', async () => {
-    const graphql = fakeGraphQL({
-      ...lookups(),
-      UpdateReportStatus: () => {
-        throw new BugSecureError('INVALID_INPUT', 'Cannot transition from NEW to FIXED');
-      },
+    const { graphql } = api(() => {
+      throw new BugSecureError('INVALID_INPUT', 'Cannot transition from NEW to FIXED');
     });
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
 
@@ -133,17 +150,14 @@ describe('update_report_status', () => {
   });
 
   it('explains an organization that has not opted in, and a missing scope', async () => {
-    const graphql = fakeGraphQL({
-      ...lookups(),
-      UpdateReportStatus: (vars) => {
-        const input = vars.input as { reportId: string };
-        if (input.reportId === 'r1')
-          throw new BugSecureError(
-            'ORG_AI_ACCESS_DISABLED',
-            'This organization has not enabled AI triage access.',
-          );
-        throw new BugSecureError('INSUFFICIENT_SCOPE', 'missing', { requiredScopes: ['triage:write'] });
-      },
+    const { graphql } = api((vars) => {
+      const input = vars.input as { reportId: string };
+      if (input.reportId === 'r1')
+        throw new BugSecureError(
+          'ORG_AI_ACCESS_DISABLED',
+          'This organization has not enabled AI triage access.',
+        );
+      throw new BugSecureError('INSUFFICIENT_SCOPE', 'missing', { requiredScopes: ['triage:write'] });
     });
     harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
 
@@ -153,6 +167,24 @@ describe('update_report_status', () => {
     expect(
       textOf(await harness.call('update_report_status', { reportId: 'r2', status: 'IN_TRIAGE' })),
     ).toContain('login --scopes "profile:read triage:read triage:write"');
+  });
+
+  it('refuses a BugSecure staff account and the user’s own report before registering anything', async () => {
+    for (const [overrides, why] of [
+      [{ roles: ['PLATFORM_ROLE_A'] }, /BugSecure staff/],
+      [{ reporterId: 'triager-1' }, /one of your own reports/],
+    ] as const) {
+      const { graphql, approvals } = api(() => updated('IN_TRIAGE'), lookups(overrides));
+      harness = await connectTools({ graphql, grantedScopes: [...TRIAGER], viewerId: 'triager-1' });
+      const result = await harness.call('update_report_status', { reportId: 'r1', status: 'IN_TRIAGE' });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(why);
+      expect(harness.prompts).toHaveLength(0);
+      expect(approvals.created).toEqual([]);
+      expect(withoutLookups(graphql.calls)).toEqual([]);
+      await harness.close();
+      harness = undefined;
+    }
   });
 
   it('is announced as destructive', async () => {

@@ -22,12 +22,18 @@
  *    schema's root types reference only root fields open to OAuth clients;
  * 2. every `graphql.request(…)` in `src/` sends a codegen'd document imported
  *    from `generated.ts`, and no source file carries an inline GraphQL
- *    operation — so (1) really covers everything that is sent;
- * 3. per tool: the root fields of the documents it sends are open to OAuth
- *    clients and covered by the tool's `requiredScopes`
- *    (plus its `optionalScopes`, for best-effort lookups — queries only: a
- *    mutation must be covered by `requiredScopes`, and a read-only tool sends
- *    none);
+ *    operation — so (1) really covers everything that is sent; the only files
+ *    that may send a document they did not import are the forwarders
+ *    (`write-retry.ts`, and `define-tool.ts`, which sends the parts a tool
+ *    built with `mutation()`), and the only non-tool file that may send
+ *    documents of its own is the approval gate, with exactly the three
+ *    framework operations (register an approval, poll it, find one);
+ * 3. per tool: the root fields of every generated document the tool's file
+ *    references (sent, or handed to `mutation()`), plus the three framework
+ *    operations every write tool goes through, are open to OAuth clients and
+ *    covered by the tool's `requiredScopes` (plus its `optionalScopes`, for
+ *    safety lookups — queries only: a mutation must be covered by
+ *    `requiredScopes`, and a read-only tool sends none);
  * 4. every nested field a document selects is on the allowed list (the API
  *    refuses some fields to OAuth tokens, and one refused field fails the whole
  *    operation), and the `search` tool asks only for result types connected
@@ -59,7 +65,7 @@ import { describe, expect, it } from 'vitest';
 
 import { loadOperations, PRUNED_SCHEMA_PATH, REPO_ROOT } from '../../scripts/lib/operations.ts';
 import * as generated from '../graphql/generated.js';
-import type { Scope } from '../scopes.js';
+import { type Scope, WRITE_SCOPES } from '../scopes.js';
 import { isWriteTool } from './define-tool.js';
 import { ALL_TOOLS } from './index.js';
 import { SEARCH_TYPES } from './search.js';
@@ -141,7 +147,24 @@ const OPEN_TO_OAUTH: Readonly<Record<RootField, ScopeRequirement>> = {
   // disclosures:write (drafting only, own reports; the scope also reads the draft)
   'Query.reportDisclosureDraft': needs('disclosures:write'),
   'Mutation.saveReportDisclosure': needs('disclosures:write'),
+  // Agent approvals (any write scope): the framework registers each write for the user's review
+  // on the website and reads the decision; deciding is first-party only and never opened.
+  'Mutation.createAgentApproval': anyOf(...WRITE_SCOPES),
+  'Query.agentApproval': anyOf(...WRITE_SCOPES),
+  'Query.myAgentApprovals': anyOf(...WRITE_SCOPES),
 };
+
+/**
+ * The framework's own documents (src/tools/approval.ts): sent before every
+ * write, under the write tool's own scope, so they count as every write
+ * tool's, and are the only documents the gate may send.
+ */
+const FRAMEWORK_DOCUMENTS: readonly string[] = [
+  'CreateAgentApprovalDocument',
+  'GetAgentApprovalDocument',
+  'ListMyAgentApprovalsDocument',
+];
+const APPROVAL_GATE = 'src/tools/approval.ts';
 
 /**
  * Every nested field an operation may select, as `Type.field`: exactly what
@@ -236,14 +259,22 @@ const repoPath = (path: string): string => relative(REPO_ROOT, path).split(sep).
 
 const GENERATED_MODULE = /(^|\/)graphql\/generated\.js$/;
 /**
- * Files that only forward a request a tool made (the tool's own `.request(…)` call is the
- * one checked here, in the tool's file) and send no document of their own.
+ * Files that only forward a request a tool made (the tool's own document, imported in the
+ * tool's file, is the one checked here) and send no document of their own: the resend of a
+ * lost write, and the framework sending the parts a tool built with `mutation()`.
  */
-const FORWARDERS: ReadonlySet<string> = new Set(['src/tools/shared/write-retry.ts']);
+const FORWARDERS: ReadonlySet<string> = new Set([
+  'src/tools/shared/write-retry.ts',
+  'src/tools/define-tool.ts',
+]);
 const INLINE_OPERATION = /^\s*(?:query|mutation|subscription)\b[^{}]*\{/;
 
 interface SourceScan {
-  /** Exported names of the generated documents passed to `.request(…)`. */
+  /**
+   * Exported names of every generated document the file references as a
+   * value (sent with `.request(…)`, or handed to `mutation()` for the
+   * framework to send): a document imported is a document the file can send.
+   */
   readonly documents: string[];
   /** Tool names this file defines (`defineTool({ name: '…' })`). */
   readonly tools: string[];
@@ -256,19 +287,22 @@ const scanSource = (path: string): SourceScan => {
   const where = (node: ts.Node): string =>
     `${repoPath(path)}:${String(file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1)}`;
 
-  // local binding → exported name, for imports from generated.ts
+  // local binding → exported name, for value imports from generated.ts (type-only imports
+  // cannot be sent).
   const imported = new Map<string, string>();
   for (const statement of file.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
     if (!GENERATED_MODULE.test(statement.moduleSpecifier.text)) continue;
+    if (statement.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
     const bindings = statement.importClause?.namedBindings;
     if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
     for (const element of bindings.elements) {
+      if (element.isTypeOnly) continue;
       imported.set(element.name.text, (element.propertyName ?? element.name).text);
     }
   }
 
-  const documents: string[] = [];
+  const documents = [...new Set(imported.values())].filter((name) => name.endsWith('Document'));
   const tools: string[] = [];
   const problems: string[] = [];
   const visit = (node: ts.Node): void => {
@@ -277,13 +311,10 @@ const scanSource = (path: string): SourceScan => {
       if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'request') {
         const [first] = node.arguments;
         const name = first !== undefined && ts.isIdentifier(first) ? imported.get(first.text) : undefined;
-        if (name === undefined) {
-          if (!FORWARDERS.has(repoPath(path)))
-            problems.push(
-              `${where(node)}: .request(…) must be passed a document imported from graphql/generated.js`,
-            );
-        } else {
-          documents.push(name);
+        if (name === undefined && !FORWARDERS.has(repoPath(path))) {
+          problems.push(
+            `${where(node)}: .request(…) must be passed a document imported from graphql/generated.js`,
+          );
         }
       }
       if (ts.isIdentifier(callee) && callee.text === 'defineTool') {
@@ -454,12 +485,26 @@ describe('API surface: only what the API opens to connected apps', () => {
     it('send only codegen documents, from the file that defines the tool', () => {
       const problems = [...scans].flatMap(([path, scan]) => [
         ...scan.problems,
-        // A request outside a tool file could not be attributed to a tool below.
-        ...(scan.documents.length > 0 && scan.tools.length !== 1
+        // A request outside a tool file could not be attributed to a tool below, except the
+        // approval gate's own three operations, which every write tool is attributed below.
+        ...(scan.documents.length > 0 && scan.tools.length !== 1 && path !== APPROVAL_GATE
           ? [`${path}: sends GraphQL documents but defines ${String(scan.tools.length)} tools (expected 1)`]
           : []),
       ]);
       expect(problems).toEqual([]);
+    });
+
+    it('the approval gate sends exactly the framework operations, and no tool file does', () => {
+      expect([...(scans.get(APPROVAL_GATE)?.documents ?? [])].sort()).toEqual(
+        [...FRAMEWORK_DOCUMENTS].sort(),
+      );
+      for (const [path, scan] of scans) {
+        if (path === APPROVAL_GATE) continue;
+        expect(
+          scan.documents.filter((d) => FRAMEWORK_DOCUMENTS.includes(d)),
+          path,
+        ).toEqual([]);
+      }
     });
 
     it('attribute every registered tool to exactly one source file', () => {
@@ -472,7 +517,9 @@ describe('API surface: only what the API opens to connected apps', () => {
       (name, tool) => {
         const scan = [...scans.values()].find((s) => s.tools.includes(name));
         expect(scan?.documents.length ?? 0).toBeGreaterThan(0);
-        const problems = (scan?.documents ?? []).flatMap((documentName) =>
+        // A write tool also sends the framework's approval operations, under its own write scope.
+        const documents = [...(scan?.documents ?? []), ...(isWriteTool(tool) ? FRAMEWORK_DOCUMENTS : [])];
+        const problems = documents.flatMap((documentName) =>
           [...rootFieldsOf(generatedDocument(documentName))].flatMap(([operation, fields]) =>
             fields.flatMap((field) => {
               const why = refusal(field);

@@ -3,6 +3,7 @@ import * as z from 'zod';
 import { BugSecureError } from '../errors.js';
 import { cleanMessage } from '../http.js';
 import { isScope, type Scope } from '../scopes.js';
+import { CHECK_BEFORE_REAPPROVING } from '../tools/shared/request-id.js';
 import { untrusted } from '../untrusted.js';
 
 export const GraphQLErrorSchema = z.object({
@@ -50,8 +51,13 @@ const TERMS_HINT =
 const ORGANIZATION_TERMS_HINT =
   'Only an Administrator of that organisation can accept them, on the BugSecure website; a connected app cannot. Do not retry until then.';
 
-/** The API release write tools need (SECURITY.md § Requirements). */
+/** The API release that first stored idempotency keys on every write (SECURITY.md § Requirements). */
 export const IDEMPOTENCY_API = 'BugSecure API with idempotency keys on every write, September 2026';
+/** The API release write tools need: approvals reviewed on the website (SECURITY.md § Requirements). */
+export const AGENT_APPROVALS_API = 'BugSecure API with agent approvals (October 2026)';
+
+/** Root fields and types of the agent-approval API, matched in a validation error's message only. */
+const AGENT_APPROVAL_NAMES = /\b(?:createAgentApproval|agentApproval|myAgentApprovals|AgentApproval\w*)\b/;
 
 /** Machine codes are shown as-is only when they look like one. */
 const SAFE_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -151,9 +157,59 @@ export const mapGraphQLErrors = (errors: readonly GraphQLErrorShape[]): BugSecur
         'CONFLICT',
         'A file is still being checked by BugSecure; retry in a minute or two.',
       );
+    // Agent approvals (tools/approval.ts): the API runs a write from a connected app only with
+    // an APPROVED, unexpired, unused approval of exactly these arguments under this key. This
+    // server sends a write only once it saw that approval, so a refusal here means another
+    // request used it meanwhile (the API performs one write per approval) or the arguments
+    // differ from what was approved: nothing was written by THIS request, but the change may
+    // exist. Never retried: check first, then a new approval if the user still wants it.
+    case 'AGENT_APPROVAL_REQUIRED':
+    case 'AGENT_APPROVAL_MISMATCH':
+      return new BugSecureError(
+        'APPROVAL_REQUIRED',
+        'Nothing was sent: BugSecure found no approval matching this exact change.',
+        {
+          hint:
+            'Do not retry this call, and do not ask the user to approve it again yet: ' +
+            `${CHECK_BEFORE_REAPPROVING} Only then call the tool again, so BugSecure can ask them.`,
+        },
+      );
+    case 'AGENT_APPROVAL_NOT_FOUND':
+      return new BugSecureError(
+        'NOT_FOUND',
+        'Nothing was sent: BugSecure no longer has the approval this change was waiting for.',
+        {
+          hint: 'If the user still wants the change, call the tool again so BugSecure can ask them to approve it.',
+        },
+      );
+    case 'AGENT_APPROVAL_EXPIRED':
+    case 'AGENT_APPROVAL_ALREADY_DECIDED':
+    case 'AGENT_APPROVAL_GRANT_REVOKED':
+      return new BugSecureError(
+        'CONFLICT',
+        'Nothing was sent: the approval this change was waiting for can no longer be used.',
+        {
+          hint: 'If the user still wants the change, call the tool again so BugSecure can ask them to approve it.',
+        },
+      );
+    case 'AGENT_APPROVAL_LIMIT_REACHED':
+      return new BugSecureError(
+        'RATE_LIMITED',
+        'Nothing was sent: the user has too many changes awaiting their approval on BugSecure.',
+        {
+          hint:
+            'Ask the user to decide the pending ones under Settings → Agent approvals on BugSecure (or let them ' +
+            'expire, 15 minutes after they were created), then call the tool again. Do not retry on your own.',
+        },
+      );
+    case 'AGENT_APPROVAL_INVALID_PART':
+      return new BugSecureError(
+        'INVALID_INPUT',
+        `BugSecure refused the change before asking the user:\n${relayed()}`,
+      );
     // Idempotency keys (`clientRequestId`, see tools/shared/request-id.ts). The key of an
-    // approved write is its approval's nonce, bound to the exact arguments: a reuse or an
-    // overlap means that approval was replayed, or retried while its first use ran.
+    // approved write is the approval's, bound to the exact arguments: a reuse or an overlap
+    // means that approval was replayed, or retried while its first use ran.
     case 'IDEMPOTENCY_KEY_IN_PROGRESS':
       return new BugSecureError(
         'REQUEST_IN_PROGRESS',
@@ -175,8 +231,14 @@ export const mapGraphQLErrors = (errors: readonly GraphQLErrorShape[]): BugSecur
     case 'TOO_MANY_REQUESTS':
       return new BugSecureError('RATE_LIMITED', 'The BugSecure API is rate limiting these requests.');
     case 'GRAPHQL_VALIDATION_FAILED':
-      // An API that predates idempotency keys rejects the argument before running anything.
-      // The message is only matched here, never relayed.
+      // An API that predates agent approvals (or idempotency keys) rejects the field or the
+      // argument before running anything. The message is only matched here, never relayed.
+      if (AGENT_APPROVAL_NAMES.test(error.message))
+        return new BugSecureError(
+          'UPSTREAM_OUTDATED',
+          'This BugSecure API does not support agent approvals yet, which this version of bugsecure-mcp ' +
+            `needs before every change (${AGENT_APPROVALS_API}).`,
+        );
       if (/\bclientRequestId\b/.test(error.message))
         return new BugSecureError(
           'UPSTREAM_OUTDATED',

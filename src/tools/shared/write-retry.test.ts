@@ -6,7 +6,7 @@ import { mapGraphQLErrors } from '../../graphql/errors.js';
 import { AddReportCommentDocument, GetReportRefDocument } from '../../graphql/generated.js';
 import { silentLogger } from '../../logger.js';
 import { withResponseNonce } from '../../untrusted.js';
-import { OUTCOME_UNKNOWN_HINT, resendingLostWrites } from './write-retry.js';
+import { MIN_RESEND_MS, OUTCOME_UNKNOWN_HINT, resendingLostWrites } from './write-retry.js';
 
 const posted = { id: 'c9', reportId: 'r1', isInternal: false, createdAt: '2026-09-21T10:00:00.000Z' };
 const variables = {
@@ -293,6 +293,38 @@ describe('resendingLostWrites', () => {
       ),
     ).rejects.toMatchObject({ code: 'UPSTREAM_UNAVAILABLE', hint: undefined });
     expect(keyless.graphql.calls).toHaveLength(1);
+  });
+
+  it('does not resend when the call has no time left to hear the resend: an unknown outcome, nothing new sent', async () => {
+    expect(MIN_RESEND_MS).toBe(1_000);
+    const write = idempotentWrite(() => ({ addReportComment: posted }), { drop: 1 });
+    const { graphql, resending } = client({ AddReportComment: write });
+    const error: unknown = await resending
+      .request(AddReportCommentDocument, variables, { answerBy: Date.now() + MIN_RESEND_MS - 100 })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(BugSecureError);
+    expect((error as BugSecureError).code).toBe('UPSTREAM_UNAVAILABLE');
+    expect((error as BugSecureError).message).toContain(
+      'no time left to resend it with the same idempotency key',
+    );
+    expect((error as BugSecureError).message).toContain('The request failed: The BugSecure API timed out.');
+    expect((error as BugSecureError).hint).toBe(OUTCOME_UNKNOWN_HINT);
+    expect(graphql.calls).toHaveLength(1);
+    // The same write was committed: with time to spare, the resend reads it back.
+    const roomy = client({
+      AddReportComment: idempotentWrite(() => ({ addReportComment: posted }), { drop: 1 }),
+    });
+    await expect(
+      roomy.resending.request(AddReportCommentDocument, variables, { answerBy: Date.now() + 60_000 }),
+    ).resolves.toEqual({ addReportComment: posted });
+    expect(roomy.graphql.calls).toHaveLength(2);
+    // Nor does it keep asking after IN_PROGRESS when the next wait would pass the deadline.
+    const stalled = fakeGraphQL({ AddReportComment: sequence(lost, inProgress) });
+    const asking = resendingLostWrites(stalled, { logger: silentLogger, inProgressDelaysMs: [60_000] });
+    await expect(
+      asking.request(AddReportCommentDocument, variables, { answerBy: Date.now() + 5_000 }),
+    ).rejects.toMatchObject({ code: 'UPSTREAM_UNAVAILABLE', hint: OUTCOME_UNKNOWN_HINT });
+    expect(stalled.calls).toHaveLength(2);
   });
 
   it('does not resend once the call was cancelled, nor keep waiting', async () => {

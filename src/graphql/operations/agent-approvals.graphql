@@ -1,0 +1,35 @@
+# Framework operations for agent approvals (src/tools/approval.ts): the review
+# of a write on the BugSecure website. Sent by every write tool, under its own
+# write scope, before the write it approves; never by a tool's own code. The
+# API narrows each of them to the calling OAuth client and the signed-in user.
+
+fragment AgentApprovalRef on AgentApprovalModel {
+  id
+  status
+  reviewUrl
+  expiresAt
+  clientRequestId
+}
+
+# Registers the exact mutation(s) a tool will send, for the user to review.
+mutation CreateAgentApproval($input: CreateAgentApprovalInput!, $clientRequestId: String!) {
+  createAgentApproval(input: $input, clientRequestId: $clientRequestId) {
+    ...AgentApprovalRef
+  }
+}
+
+# Polled while the user decides on the review page.
+query GetAgentApproval($id: ID!) {
+  agentApproval(id: $id) {
+    ...AgentApprovalRef
+  }
+}
+
+# Finds an approval of the same payload (clientDigest) when the call carries no
+# usable state: approved on the website by a client that cannot open the page,
+# or still pending, so no duplicate is created.
+query ListMyAgentApprovals($clientDigest: String!, $statuses: [AgentApprovalStatus!]!) {
+  myAgentApprovals(clientDigest: $clientDigest, statuses: $statuses) {
+    ...AgentApprovalRef
+  }
+}

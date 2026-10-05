@@ -6,12 +6,9 @@ import { InMemoryTransport } from '@modelcontextprotocol/client';
 import type { StdioServerHandle } from '@modelcontextprotocol/server/stdio';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { fakeAgentApprovals } from '../../test/helpers/fake-graphql.js';
 import { memoryStore } from '../../test/helpers/memory-store.js';
-import {
-  type ApprovalAnswer,
-  type ElicitationPrompt,
-  elicitingClient,
-} from '../../test/helpers/tool-harness.js';
+import { type ElicitationPrompt, elicitingClient, type OpenAnswer } from '../../test/helpers/tool-harness.js';
 import type { StoredCredentials } from '../auth/stdio/credential-store.js';
 import { loadLocalConfig } from '../config.js';
 import { silentLogger } from '../logger.js';
@@ -20,6 +17,10 @@ import { runStdio } from './stdio.js';
 const API = 'http://127.0.0.1:9';
 const config = loadLocalConfig({
   BUGSECURE_API_URL: API,
+  // A development web app on the same loopback origin: review URLs are accepted on it.
+  BUGSECURE_WEB_URL: API,
+  BUGSECURE_APPROVAL_POLL_INTERVAL_MS: '100',
+  BUGSECURE_APPROVAL_POLL_BUDGET_MS: '1000',
   BUGSECURE_CONFIG_DIR: mkdtempSync(join(tmpdir(), 'bsmcp-stdio-')),
 });
 
@@ -42,23 +43,27 @@ afterEach(async () => {
   handle = undefined;
 });
 
-const start = async (stored: StoredCredentials[], approve: ApprovalAnswer = 'accept') => {
+const start = async (stored: StoredCredentials[], open: OpenAnswer = 'accept') => {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   handle = await runStdio(config, silentLogger, { store: memoryStore(stored), transport: serverTransport });
   const prompts: ElicitationPrompt[] = [];
-  const client = elicitingClient(approve, prompts, { versionNegotiation: { mode: 'auto' } });
+  const client = elicitingClient(open, prompts, { versionNegotiation: { mode: 'auto' } });
   await client.connect(clientTransport);
   return { client, prompts };
 };
 
-const stubApi = (data: Record<string, unknown>) => {
-  const calls: { authorization: string | null; body: string }[] = [];
+type Answer = Record<string, unknown> | ((operation: string, variables: Record<string, unknown>) => unknown);
+
+/** A fake API answering every GraphQL request with `data` (or `data(operation, variables)`). */
+const stubApi = (data: Answer) => {
+  const calls: { authorization: string | null; body: string; operation: string }[] = [];
   vi.stubGlobal('fetch', (_url: string, init?: RequestInit) => {
-    calls.push({
-      authorization: new Headers(init?.headers).get('authorization'),
-      body: typeof init?.body === 'string' ? init.body : '',
-    });
-    return Promise.resolve(Response.json({ data }));
+    const body = typeof init?.body === 'string' ? init.body : '';
+    const { query, variables } = JSON.parse(body) as { query: string; variables?: Record<string, unknown> };
+    const operation = /\b(?:query|mutation)\s+(\w+)/.exec(query)?.[1] ?? '?';
+    calls.push({ authorization: new Headers(init?.headers).get('authorization'), body, operation });
+    const answer = typeof data === 'function' ? data(operation, variables ?? {}) : data;
+    return Promise.resolve(Response.json({ data: answer }));
   });
   return calls;
 };
@@ -93,19 +98,36 @@ describe('runStdio', () => {
   it.each([
     ['accept', 1],
     ['decline', 0],
-  ] as const)('asks before writing; answered %s → %i write(s)', async (approve, writes) => {
-    const calls = stubApi({
-      addReportComment: { id: 'c1', reportId: 'r1', isInternal: false, createdAt: '2026-09-21T10:00:00Z' },
-    });
-    const { client, prompts } = await start([login()], approve);
-    const result = await client.callTool({
-      name: 'add_report_comment',
-      arguments: { reportId: 'r1', content: 'hi' },
-    });
-    expect(prompts).toHaveLength(1);
-    expect(calls).toHaveLength(writes);
-    expect(result.isError ?? false).toBe(writes === 0);
-  });
+  ] as const)(
+    'sends the user to the review page before writing; opened: %s → %i write(s)',
+    async (open, writes) => {
+      // Review URLs on the loopback web origin the config accepts (BUGSECURE_WEB_URL = API).
+      const approvals = fakeAgentApprovals('approve', { reviewUrl: (id) => `${API}/agent-approvals/${id}` });
+      const calls = stubApi((operation, variables) =>
+        operation === 'AddReportComment'
+          ? {
+              addReportComment: {
+                id: 'c1',
+                reportId: 'r1',
+                isInternal: false,
+                createdAt: '2026-09-21T10:00:00Z',
+              },
+            }
+          : approvals.handlers[operation]?.(variables),
+      );
+      const { client, prompts } = await start([login()], open);
+      const result = await client.callTool({
+        name: 'add_report_comment',
+        arguments: { reportId: 'r1', content: 'Here is the account.' },
+      });
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]?.mode).toBe('url');
+      expect(prompts[0]?.url).toBe(`${API}/agent-approvals/${approvals.created[0]?.id ?? ''}`);
+      expect(prompts[0]?.message).not.toContain('Here is the account.');
+      expect(calls.filter((c) => c.operation === 'AddReportComment')).toHaveLength(writes);
+      expect(result.isError ?? false).toBe(writes === 0);
+    },
+  );
 });
 
 describe('runStdio: an access token the API no longer accepts', () => {
