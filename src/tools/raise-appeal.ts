@@ -5,7 +5,7 @@ import type { AppealStatus } from '../graphql/generated.js';
 import { GetAppealTargetDocument, RaiseAppealDocument } from '../graphql/generated.js';
 import { id, idInput, timestamp, userText } from './shared/common.js';
 import { assertOwnReport } from './shared/report.js';
-import { defineTool } from './define-tool.js';
+import { defineTool, mutation } from './define-tool.js';
 
 const APPEAL_STATUSES = [
   'OPEN',
@@ -22,10 +22,10 @@ export const raiseAppeal = defineTool({
     'BugSecure, as the appointed neutral third party, re-examines the grade (an assessor other than the ' +
     'grader); the organisation sees the grounds. An appeal cannot be withdrawn from here, and the number ' +
     'of appeals per report is limited, so only call this when the user explicitly asked to appeal; they ' +
-    'are shown the exact grounds and must approve them. Get the grade’s id from get_report. Appeals must ' +
-    'be raised before the appeal window closes.',
+    'read and approve the exact grounds on BugSecure first, next to the grade contested. Get the grade’s ' +
+    'id from get_report (adjudication.id). Appeals must be raised before the appeal window closes.',
   requiredScopes: ['reports:write'],
-  // Reading the report shows its title and the grade contested in the approval, and checks it is the user's.
+  // Safety lookup: the report must be the caller's own and the grade the one in force on it.
   optionalScopes: ['reports:read'],
   // Destructive: irreversible (cannot be withdrawn here, and uses one of the report's limited appeals).
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
@@ -43,9 +43,9 @@ export const raiseAppeal = defineTool({
       createdAt: timestamp(),
     }),
   }),
-  approval: async (input, context) => {
-    const notes: string[] = [];
-    const shown: [string, string | undefined][] = [];
+  // `reportId` names the report for the model and the check below; the API needs only the grade,
+  // and enforces the same rules itself (the review page shows the report and the grade contested).
+  payload: async (input, context) => {
     if (context.granted.has('reports:read')) {
       let target;
       try {
@@ -55,52 +55,35 @@ export const raiseAppeal = defineTool({
           { signal: context.signal },
         );
       } catch (error) {
-        if (context.signal.aborted) throw error;
-        notes.push('Could not look up the report and its grade; only ids are shown.');
-      }
-      if (target !== undefined) {
-        if (target.report === null)
-          throw new BugSecureError('NOT_FOUND', 'No report with that id is visible to this account.');
-        assertOwnReport(target.report.reporter.id, context.viewerId);
-        const grade = target.reportAdjudication;
-        if (grade?.id !== input.adjudicationId) {
-          throw new BugSecureError(
-            'INVALID_INPUT',
-            'Nothing was sent: that grade is not the one in force on this report. Read the report again with get_report and use its adjudication.id.',
-          );
-        }
-        shown.push(
-          ['Report', target.report.title],
-          [
-            'Grade contested',
-            `${grade.severity}, ${grade.amount === null ? 'no reward' : `${grade.amount.toLocaleString('en-US')} ${grade.currency}`}, graded by ${grade.side === 'ORGANIZATION' ? 'the organisation' : 'BugSecure'}`,
-          ],
+        // A typed refusal (session expired, scope missing, API refusal) keeps its own guidance.
+        if (context.signal.aborted || error instanceof BugSecureError) throw error;
+        // Fail closed: an appeal is irreversible and counted, so it is not asked for unverified.
+        throw new BugSecureError(
+          'UPSTREAM_UNAVAILABLE',
+          'Nothing was sent: the report and its grade could not be checked on BugSecure. Try again.',
         );
       }
-    } else {
-      notes.push('The report and the grade are not shown: this connection lacks reports:read.');
+      if (target.report === null)
+        throw new BugSecureError('NOT_FOUND', 'No report with that id is visible to this account.');
+      assertOwnReport(target.report.reporter.id, context.viewerId);
+      if (target.reportAdjudication?.id !== input.adjudicationId) {
+        throw new BugSecureError(
+          'INVALID_INPUT',
+          'Nothing was sent: that grade is not the one in force on this report. Read the report again with get_report and use its adjudication.id.',
+        );
+      }
     }
     return {
-      action: `appeal the grade ${input.adjudicationId} of your report ${input.reportId}`,
-      audience:
-        'BugSecure, as the neutral third party, re-examines the grade; the organisation sees the grounds. Appeals per report are limited.',
-      irreversible: true,
-      context: shown,
-      notes,
-      fields: [
-        ['Report', input.reportId],
-        ['Grade', input.adjudicationId],
-        ['Grounds', input.grounds],
+      action: 'appeal the grade of one of your reports',
+      parts: [
+        mutation(RaiseAppealDocument, {
+          input: { adjudicationId: input.adjudicationId, grounds: input.grounds },
+        }),
       ],
     };
   },
-  // `reportId` is for the approval and the checks above; the API needs only the grade.
-  async handler(input, { graphql, signal, clientRequestId }) {
-    const { raiseAppeal: a } = await graphql.request(
-      RaiseAppealDocument,
-      { input: { adjudicationId: input.adjudicationId, grounds: input.grounds }, clientRequestId },
-      { signal },
-    );
+  async handler(_input, { approved, signal }) {
+    const { raiseAppeal: a } = await approved.part.send({ signal });
     return {
       data: {
         appeal: {

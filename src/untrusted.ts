@@ -129,29 +129,12 @@ export const isUntrustedBlock = (value: string): boolean => {
 // start a new line a renderer does not count as one.
 // eslint-disable-next-line no-control-regex
 const REVIEW_CONTROLS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u2028\u2029]/g;
-// `<` that could open an HTML comment or tag in a client that renders the
-// prompt as Markdown/HTML (`<!-- hidden -->`, `<details>`, `</x>`, `<?x`).
-const MARKUP_OPENER = /<(?=[!/?A-Za-z])/g;
-
-/**
- * Show text to a HUMAN reviewer (approval prompts) exactly as it will be sent,
- * but with every character that could hide or fake something made visible:
- * invisible and direction-changing characters and control characters become
- * `\u{…}` escapes, and a `<` that could open markup becomes `\<` (which a
- * Markdown renderer displays as `<`, and a plain-text one as `\<`).
- */
-export const revealForReview = (text: string): string => {
-  return text
-    .replace(BIDI_CONTROLS, visibleEscape)
-    .replace(INVISIBLE, visibleEscape)
-    .replace(REVIEW_CONTROLS, visibleEscape)
-    .replace(MARKUP_OPENER, '\\<');
-};
-
 /**
  * `true` when `text` contains a C0/C1 control character other than tab and
  * line feed (carriage returns are normalised away before this is checked),
- * or a Unicode line/paragraph separator. Used to refuse such input outright.
+ * or a Unicode line/paragraph separator. Used to refuse such input outright:
+ * such characters have no business in a report, and could hide or rearrange
+ * what the user is shown for approval.
  */
 export const hasControlCharacters = (text: string): boolean => {
   REVIEW_CONTROLS.lastIndex = 0;

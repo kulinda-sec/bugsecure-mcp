@@ -4,6 +4,8 @@
  */
 import { McpServer } from '@modelcontextprotocol/server';
 
+import { ExpiringLru } from './lru.js';
+
 import type { AuthMode } from './errors.js';
 import type { GraphQLClient } from './graphql/client.js';
 import { serverInstructions } from './instructions.js';
@@ -29,6 +31,16 @@ export interface BuildServerOptions {
   readonly approvals: ApprovalGate;
   /** Per-caller tool invocation limit (hosted). */
   readonly rateLimit?: ((toolName: string) => void) | undefined;
+  /** When the MCP client gives up on the current call (absolute, ms); see RegisterToolsOptions. */
+  readonly deadlineAt?: (() => number) | undefined;
+  /** The API client's timeout: what one write attempt may take. */
+  readonly writeTimeoutMs?: number | undefined;
+  /** How long the MCP client waits for a call (default: the SDK's 60 s); see RegisterToolsOptions. */
+  readonly clientDeadlineMs?: number | undefined;
+  /** Time kept after a write attempt for the answer; tests shorten it. */
+  readonly answerMarginMs?: number | undefined;
+  /** The least a write attempt is given; tests shorten it. */
+  readonly minWriteAttemptMs?: number | undefined;
   /** Defaults to every registered tool; injectable for tests. */
   readonly tools?: readonly AnyTool[];
 }
@@ -72,6 +84,14 @@ export const buildServer = (options: BuildServerOptions): McpServer => {
     memo: new SessionMemo(),
     approvals: options.approvals,
     rateLimit: options.rateLimit,
+    deadlineAt: options.deadlineAt,
+    writeTimeoutMs: options.writeTimeoutMs,
+    clientDeadlineMs: options.clientDeadlineMs,
+    answerMarginMs: options.answerMarginMs,
+    minWriteAttemptMs: options.minWriteAttemptMs,
+    // One per session too: a deadline belongs to one SDK request, and the SDK's legacy shim
+    // re-enters the handler for the same request within the same server.
+    callDeadlines: new ExpiringLru<string, number>(1_000),
   });
   return server;
 };

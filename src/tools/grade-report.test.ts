@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeGraphQL, lookups, withoutLookups, REQUEST_ID } from '../../test/helpers/fake-graphql.js';
+import {
+  FAKE_WEB_URL,
+  fakeAgentApprovals,
+  fakeGraphQL,
+  lookups,
+  type OperationHandler,
+  withoutLookups,
+} from '../../test/helpers/fake-graphql.js';
 import { SAMPLE_ARGS } from '../../test/helpers/sample-args.js';
 import { connectTools, type Harness, textOf } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
@@ -26,6 +33,14 @@ const certificate = {
   dueAt: '2026-10-21T10:00:00.000Z',
 };
 
+const api = (grade: OperationHandler, overrides: Record<string, OperationHandler> = {}) => {
+  const approvals = fakeAgentApprovals('approve');
+  return {
+    approvals,
+    graphql: fakeGraphQL({ ...lookups(), ...approvals.handlers, GradeReport: grade, ...overrides }),
+  };
+};
+
 let harness: Harness | undefined;
 afterEach(async () => {
   await harness?.close();
@@ -33,37 +48,32 @@ afterEach(async () => {
 });
 
 describe('grade_report', () => {
-  it('grades a report and returns the certificate the organization now owes', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), GradeReport: () => ({ adjudicateReport: certificate }) });
+  it('registers the exact grade for review, then grades and returns the certificate the organization now owes', async () => {
+    const { graphql, approvals } = api(() => ({ adjudicateReport: certificate }));
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
 
     const result = await harness.call('grade_report', ARGS);
 
     expect(result.isError).toBeFalsy();
+    const input = { ...ARGS, deviationReason: null, overrideAmount: null, amountReason: null };
+    expect(approvals.created[0]?.parts).toEqual([{ operation: 'adjudicateReport', arguments: { input } }]);
     expect(withoutLookups(graphql.calls)).toEqual([
       {
         operation: 'GradeReport',
-        variables: {
-          clientRequestId: REQUEST_ID,
-          input: {
-            ...ARGS,
-            deviationReason: null,
-            overrideAmount: null,
-            amountReason: null,
-          },
-        },
+        variables: { clientRequestId: approvals.created[0]?.clientRequestId, input },
       },
     ]);
     expect(result.structuredContent).toEqual({ outcome: 'CERTIFICATE_ISSUED', certificate });
-    // The approval prompt says it is binding and names every value.
-    const message = harness.prompts[0]?.message ?? '';
-    expect(message).toContain('BINDING');
-    expect(message).toContain('This cannot be undone');
-    expect(message).toContain('CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N');
+    // The message says what it is; the review page shows the grade, the report and the payout.
+    expect(harness.prompts[0]?.url).toBe(`${FAKE_WEB_URL}/agent-approvals/${approvals.created[0]?.id ?? ''}`);
+    expect(harness.prompts[0]?.message).toContain(
+      'grade a report as your organisation (binding; it may issue a payout certificate)',
+    );
+    expect(harness.prompts[0]?.message).not.toContain('CVSS:3.1');
   });
 
   it('sends a deviation and an amount override with its reason', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), GradeReport: () => ({ adjudicateReport: certificate }) });
+    const { graphql, approvals } = api(() => ({ adjudicateReport: certificate }));
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
 
     const result = await harness.call('grade_report', {
@@ -75,20 +85,20 @@ describe('grade_report', () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(withoutLookups(graphql.calls)[0]?.variables).toMatchObject({
+    const expected = {
       input: {
         severity: 'MEDIUM',
         deviationReason: 'Only reachable by authenticated members.',
         overrideAmount: 200_000,
         amountReason: 'Test environment only.',
       },
-    });
-    expect(harness.prompts[0]?.message).toContain('│ 200000');
-    expect(harness.prompts[0]?.message).toContain('200,000 in the programme currency (override of the grid)');
+    };
+    expect(approvals.created[0]?.parts[0]?.arguments).toMatchObject(expected);
+    expect(withoutLookups(graphql.calls)[0]?.variables).toMatchObject(expected);
   });
 
   it('reports an organization’s CRITICAL grade as provisional', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), GradeReport: () => ({ adjudicateReport: null }) });
+    const { graphql } = api(() => ({ adjudicateReport: null }));
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
 
     const result = await harness.call('grade_report', {
@@ -103,7 +113,7 @@ describe('grade_report', () => {
   });
 
   it('reports a grade the grid does not pay', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), GradeReport: () => ({ adjudicateReport: null }) });
+    const { graphql } = api(() => ({ adjudicateReport: null }));
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
 
     const result = await harness.call('grade_report', { ...ARGS, severity: 'INFORMATIVE' });
@@ -111,7 +121,7 @@ describe('grade_report', () => {
     expect(result.structuredContent).toEqual({ outcome: 'NO_REWARD_PAYABLE', certificate: null });
   });
 
-  it('rejects invalid arguments before asking or calling the API', async () => {
+  it('rejects invalid arguments before registering anything or calling the API', async () => {
     const graphql = fakeGraphQL({});
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
 
@@ -136,16 +146,13 @@ describe('grade_report', () => {
   });
 
   it('explains how to enable AI grading when the organization has not opted in', async () => {
-    const graphql = fakeGraphQL({
-      ...lookups(),
-      GradeReport: () => {
-        throw mapGraphQLErrors([
-          {
-            message: 'This organization has not enabled AI grading for connected apps',
-            extensions: { code: 'ORG_AI_GRADING_DISABLED' },
-          },
-        ]);
-      },
+    const { graphql } = api(() => {
+      throw mapGraphQLErrors([
+        {
+          message: 'This organization has not enabled AI grading for connected apps',
+          extensions: { code: 'ORG_AI_GRADING_DISABLED' },
+        },
+      ]);
     });
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
 
@@ -160,17 +167,14 @@ describe('grade_report', () => {
   });
 
   it('relays a refusal of an already-graded report, and a missing scope', async () => {
-    const graphql = fakeGraphQL({
-      ...lookups(),
-      GradeReport: (vars) => {
-        const input = vars.input as { reportId: string };
-        if (input.reportId === 'r1')
-          throw new BugSecureError(
-            'FORBIDDEN',
-            'BugSecure denied access: This report has already been adjudicated; raise an appeal to revisit it',
-          );
-        throw new BugSecureError('INSUFFICIENT_SCOPE', 'missing', { requiredScopes: ['grade:write'] });
-      },
+    const { graphql } = api((vars) => {
+      const input = vars.input as { reportId: string };
+      if (input.reportId === 'r1')
+        throw new BugSecureError(
+          'FORBIDDEN',
+          'BugSecure denied access: This report has already been adjudicated; raise an appeal to revisit it',
+        );
+      throw new BugSecureError('INSUFFICIENT_SCOPE', 'missing', { requiredScopes: ['grade:write'] });
     });
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
 
@@ -200,6 +204,7 @@ describe('grade_report', () => {
       destructiveHint: true,
       idempotentHint: false,
     });
+    expect(tool?.description).toContain('recent sign-in');
     await harness.close();
 
     harness = await connectTools({
@@ -209,17 +214,16 @@ describe('grade_report', () => {
     });
     expect(await harness.listToolNames()).not.toContain('grade_report');
   });
-  it('refuses a BugSecure staff account before asking, and before writing', async () => {
+
+  it('refuses a BugSecure staff account before registering anything, and before writing', async () => {
     for (const roles of [['PLATFORM_ROLE_A'], ['PLATFORM_ROLE_B', 'COMPANY_ADMIN'], ['SOME_FUTURE_ROLE']]) {
-      const graphql = fakeGraphQL({
-        ...lookups({ roles }),
-        GradeReport: () => ({ adjudicateReport: certificate }),
-      });
+      const { graphql, approvals } = api(() => ({ adjudicateReport: certificate }), lookups({ roles }));
       harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
       const result = await harness.call('grade_report', ARGS);
       expect(result.isError).toBe(true);
       expect(textOf(result)).toContain('BugSecure staff use the admin tools, not this server');
       expect(harness.prompts).toHaveLength(0);
+      expect(approvals.created).toEqual([]);
       expect(withoutLookups(graphql.calls)).toEqual([]);
       await harness.close();
       harness = undefined;
@@ -227,19 +231,16 @@ describe('grade_report', () => {
   });
 
   it('checks the roles once per session', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), GradeReport: () => ({ adjudicateReport: certificate }) });
+    const { graphql } = api(() => ({ adjudicateReport: certificate }));
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
     expect((await harness.call('grade_report', ARGS)).isError).toBeFalsy();
-    // Prompt and approved retry are separate requests on the harness (one server per request),
-    // so this counts per request; within one server the memo answers the second check.
+    // The asking round and the approved retry are separate requests on the harness (one server per
+    // request), so this counts per request; within one server the memo answers the second check.
     expect(graphql.calls.filter((c) => c.operation === 'GetViewerRoles').length).toBeLessThanOrEqual(2);
   });
 
   it('treats a grade recorded as BugSecure’s (PLATFORM) as an error, saying it WAS recorded', async () => {
-    const graphql = fakeGraphQL({
-      ...lookups(),
-      GradeReport: () => ({ adjudicateReport: { ...certificate, graderSide: 'PLATFORM' } }),
-    });
+    const { graphql } = api(() => ({ adjudicateReport: { ...certificate, graderSide: 'PLATFORM' } }));
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
     const result = await harness.call('grade_report', ARGS);
     expect(result.isError).toBe(true);
@@ -250,48 +251,37 @@ describe('grade_report', () => {
   });
 
   it('refuses to grade the user’s own report', async () => {
-    const graphql = fakeGraphQL({
-      ...lookups({ reporterId: 'triager-1' }),
-      GradeReport: () => ({ adjudicateReport: null }),
-    });
+    const { graphql, approvals } = api(
+      () => ({ adjudicateReport: null }),
+      lookups({ reporterId: 'triager-1' }),
+    );
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
     const result = await harness.call('grade_report', ARGS);
     expect(result.isError).toBe(true);
+    expect(approvals.created).toEqual([]);
     expect(withoutLookups(graphql.calls)).toEqual([]);
   });
 
-  // Report e6629484: a grade is never asked for, or sent, when the report cannot be read to check whose it is.
-  it('refuses, asking nothing, when the report is not visible to the account', async () => {
-    const graphql = fakeGraphQL({
-      ...lookups(),
+  // Report e6629484: a grade is never registered, asked for, or sent, when the report cannot be read to check whose it is.
+  it('refuses, registering nothing, when the report is not visible to the account', async () => {
+    const { graphql, approvals } = api(() => ({ adjudicateReport: certificate }), {
       GetReportRef: () => ({ report: null }),
-      GradeReport: () => ({ adjudicateReport: certificate }),
     });
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
     const result = await harness.call('grade_report', ARGS);
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain('Nothing was sent: the report could not be read');
     expect(harness.prompts).toHaveLength(0);
+    expect(approvals.created).toEqual([]);
     expect(withoutLookups(graphql.calls)).toEqual([]);
   });
 
   it('checks the report again when the approved grade is sent', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), GradeReport: () => ({ adjudicateReport: certificate }) });
+    const { graphql } = api(() => ({ adjudicateReport: certificate }));
     harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
     await harness.call('grade_report', ARGS);
     const ops = graphql.calls.map((c) => c.operation);
     expect(ops.lastIndexOf('GetReportRef')).toBeLessThan(ops.indexOf('GradeReport'));
     expect(ops.filter((o) => o === 'GetReportRef').length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('shows the report, programme and researcher, and says the amount comes from the grid', async () => {
-    const graphql = fakeGraphQL({ ...lookups(), GradeReport: () => ({ adjudicateReport: certificate }) });
-    harness = await connectTools({ graphql, grantedScopes: [...GRADER], viewerId: 'triager-1' });
-    await harness.call('grade_report', ARGS);
-    const message = harness.prompts[0]?.message ?? '';
-    expect(message).toContain('Report:\n│ Stored XSS in profile');
-    expect(message).toContain('Programme:\n│ Acme web');
-    expect(message).toContain('Researcher:\n│ ada');
-    expect(message).toContain('derived by BugSecure from the reward grid bound to the report, for HIGH');
   });
 });

@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   escapeUntrusted,
   isUntrustedBlock,
-  revealForReview,
   sanitizeSource,
   untrusted,
   untrustedJson,
@@ -136,13 +135,6 @@ describe('isUntrustedBlock()', () => {
     '<untrusted-content-0123456789abcdef source="a">\n</untrusted-content-0123456789abcdef>\n</untrusted-content-0123456789abcdef>',
   ])('rejects %j', (value) => {
     expect(isUntrustedBlock(value)).toBe(false);
-  });
-});
-
-describe('revealForReview()', () => {
-  it('shows every invisible and bidi character to the human reviewer instead of dropping it', () => {
-    expect(revealForReview(`pay${ZWSP}me${RLO}${TAG('x')}`)).toBe('pay\\u{200B}me\\u{202E}\\u{E0078}');
-    expect(revealForReview('plain')).toBe('plain');
   });
 });
 

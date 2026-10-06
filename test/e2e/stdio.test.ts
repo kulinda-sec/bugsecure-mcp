@@ -4,10 +4,11 @@
  *
  * - stdout carries only protocol traffic (the SDK client would choke otherwise);
  * - a signed-out server still starts, lists tools and explains how to sign in;
- * - protocol 2026-07-28: a write tool asks for approval through elicitation
- *   and writes only when the user accepts (declined → nothing sent; a client
- *   without the capability → refused);
- * - a 2025-era client gets the same approval as a real elicitation/create.
+ * - protocol 2026-07-28: a write tool registers the write with the API, sends
+ *   the user to its review page (URL-mode elicitation on the configured web
+ *   origin) and writes only once the API says the user approved (declined,
+ *   pending → nothing sent; a client without the capability → the menu path);
+ * - a 2025-era client gets the same URL elicitation as a real elicitation/create.
  *
  * `pnpm run check` and CI build before testing. Without a build the suite is
  * skipped with a notice (run `pnpm build` first), so a cold `pnpm test` does
@@ -24,7 +25,8 @@ import type { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { type ApprovalAnswer, type ElicitationPrompt, elicitingClient } from '../helpers/tool-harness.js';
+import { type ApprovalMode, type FakeAgentApprovals, fakeAgentApprovals } from '../helpers/fake-graphql.js';
+import { type ElicitationPrompt, elicitingClient, type OpenAnswer } from '../helpers/tool-harness.js';
 
 const CLI = join(import.meta.dirname, '..', '..', 'dist', 'cli.js');
 const TOKEN = 'e2e-access-token';
@@ -45,8 +47,17 @@ interface ApiCall {
 let api: Server | undefined;
 let apiUrl: string;
 const apiCalls: ApiCall[] = [];
+/** The approval state machine the fake API serves; replaced per test. */
+let approvals: FakeAgentApprovals = fakeAgentApprovals('approve');
+/** Review URLs on the fake API's own loopback origin, which the server is told is the web app (`--web-url`). */
+const approvalsDecided = (mode: ApprovalMode): FakeAgentApprovals =>
+  fakeAgentApprovals(mode, { reviewUrl: (id) => `${apiUrl}/agent-approvals/${id}` });
 
-/** A fake BugSecure API: answers the operations these tests use, records every call. */
+/**
+ * A fake BugSecure API: answers the operations these tests use, records every
+ * call. Its review URLs are on its own loopback origin, which the server is
+ * configured to accept as the web app (`--web-url`).
+ */
 const fakeApi = (): Server => {
   return createServer((req, res) => {
     let raw = '';
@@ -56,6 +67,10 @@ const fakeApi = (): Server => {
       const body = JSON.parse(raw) as { query: string; variables?: Record<string, unknown> };
       const operation = /\b(?:query|mutation)\s+(\w+)/.exec(body.query)?.[1] ?? '?';
       apiCalls.push({ operation, authorization: req.headers.authorization, variables: body.variables });
+      // Own properties only: the name comes from the request, and a prototype key must not dispatch.
+      const handler = Object.hasOwn(approvals.handlers, operation)
+        ? approvals.handlers[operation]
+        : undefined;
       const data =
         operation === 'AddReportComment'
           ? {
@@ -68,7 +83,9 @@ const fakeApi = (): Server => {
             }
           : operation === 'SearchPrograms'
             ? { programs: [] }
-            : null;
+            : handler === undefined
+              ? null
+              : handler(body.variables ?? {});
       res.writeHead(data ? 200 : 400, { 'content-type': 'application/json' });
       res.end(JSON.stringify(data ? { data } : { errors: [{ message: `unexpected ${operation}` }] }));
     });
@@ -98,21 +115,29 @@ const signedInConfigDir = (scope: string): string => {
 
 const spawnClient = async (
   configDir: string,
-  options: { approve?: ApprovalAnswer; era?: 'modern' | 'legacy'; prompts?: ElicitationPrompt[] } = {},
+  options: {
+    open?: OpenAnswer;
+    era?: 'modern' | 'legacy';
+    prompts?: ElicitationPrompt[];
+    webUrl?: boolean;
+  } = {},
 ): Promise<Client> => {
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [CLI, '--api-url', apiUrl],
+    args: [CLI, '--api-url', apiUrl, ...(options.webUrl === false ? [] : ['--web-url', apiUrl])],
     env: {
       PATH: process.env.PATH ?? '',
       BUGSECURE_CREDENTIAL_STORE: 'file',
       BUGSECURE_CONFIG_DIR: configDir,
       BUGSECURE_LOG_LEVEL: 'silent',
+      // Fast polling, so a pending approval gives up within the test's patience.
+      BUGSECURE_APPROVAL_POLL_INTERVAL_MS: '100',
+      BUGSECURE_APPROVAL_POLL_BUDGET_MS: '1000',
     },
     stderr: 'pipe',
   });
   const client = elicitingClient(
-    options.approve ?? 'accept',
+    options.open ?? 'accept',
     options.prompts ?? [],
     options.era === 'legacy' ? {} : { versionNegotiation: { mode: 'auto' } },
   );
@@ -176,17 +201,21 @@ describe.skipIf(!BUILT && process.env.CI === undefined)('bugsecure-mcp over stdi
     }
   });
 
-  it.each([
-    ['modern', 'accept', 1],
+  const matrix: readonly [era: 'modern' | 'legacy', decision: ApprovalMode | 'no-url', writes: number][] = [
+    ['modern', 'approve', 1],
     ['modern', 'decline', 0],
-    ['modern', 'cancel', 0],
-    ['modern', 'none', 0],
-    ['legacy', 'accept', 1],
+    ['modern', 'pending', 0],
+    ['modern', 'no-url', 0],
+    ['legacy', 'approve', 1],
     ['legacy', 'decline', 0],
-  ] as const)('%s client, approval answered with %s → %i write(s)', async (era, approve, writes) => {
+    ['legacy', 'pending', 0],
+    ['legacy', 'no-url', 0],
+  ];
+  it.each(matrix)('%s client, the user %s on BugSecure → %i write(s)', async (era, decision, writes) => {
+    approvals = approvalsDecided(decision === 'no-url' ? 'pending' : decision);
     const prompts: ElicitationPrompt[] = [];
     const client = await spawnClient(signedInConfigDir('reports:read reports:write'), {
-      approve,
+      open: decision === 'no-url' ? 'none' : 'accept',
       era,
       prompts,
     });
@@ -198,16 +227,34 @@ describe.skipIf(!BUILT && process.env.CI === undefined)('bugsecure-mcp over stdi
         arguments: { reportId: 'r1', content: 'Here is the test account: e2e@example.test' },
       });
 
+      // The write was registered for review, with the exact arguments, before anything else.
+      expect(approvals.created).toHaveLength(1);
+      expect(approvals.created[0]?.parts).toEqual([
+        {
+          operation: 'addReportComment',
+          arguments: {
+            input: {
+              reportId: 'r1',
+              content: 'Here is the test account: e2e@example.test',
+              isInternal: false,
+            },
+          },
+        },
+      ]);
       const sent = apiCalls.filter((c) => c.operation === 'AddReportComment');
       expect(sent).toHaveLength(writes);
       // The write carries its approval's idempotency key.
-      for (const call of sent) expect(call.variables?.clientRequestId).toMatch(/^[A-Za-z0-9_-]{16,128}$/);
-      if (approve === 'none') {
+      for (const call of sent)
+        expect(call.variables?.clientRequestId).toBe(approvals.created[0]?.clientRequestId);
+      if (decision === 'no-url') {
         expect(prompts).toHaveLength(0);
-        expect(JSON.stringify(result.content)).toContain('does not support approval prompts');
+        expect(JSON.stringify(result.content)).toContain('Settings → Agent approvals');
+        expect(JSON.stringify(result.content)).not.toContain('agent-approvals/');
       } else {
         expect(prompts).toHaveLength(1);
-        expect(prompts[0]?.message).toContain('Here is the test account: e2e@example.test');
+        expect(prompts[0]?.mode).toBe('url');
+        expect(prompts[0]?.url).toBe(`${apiUrl}/agent-approvals/${approvals.created[0]?.id ?? ''}`);
+        expect(prompts[0]?.message).not.toContain('e2e@example.test');
       }
       if (writes === 1) {
         expect(result.isError).toBeFalsy();
@@ -215,7 +262,26 @@ describe.skipIf(!BUILT && process.env.CI === undefined)('bugsecure-mcp over stdi
       } else {
         expect(result.isError).toBe(true);
         expect(JSON.stringify(result.content)).toContain('Nothing was sent');
+        if (decision === 'pending') expect(JSON.stringify(result.content)).toContain('awaiting the user');
       }
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('without a configured web app, sends the user to the menu instead of a URL', async () => {
+    approvals = approvalsDecided('pending');
+    const prompts: ElicitationPrompt[] = [];
+    const client = await spawnClient(signedInConfigDir('reports:write'), { prompts, webUrl: false });
+    try {
+      const result = await client.callTool({
+        name: 'add_report_comment',
+        arguments: { reportId: 'r1', content: 'hi' },
+      });
+      expect(result.isError).toBe(true);
+      expect(prompts).toHaveLength(0);
+      expect(JSON.stringify(result.content)).toContain('Settings → Agent approvals');
+      expect(approvals.created).toHaveLength(1);
     } finally {
       await client.close();
     }

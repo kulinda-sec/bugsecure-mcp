@@ -80,9 +80,16 @@ export const WRITE_OPERATION: Readonly<Record<string, string>> = {
   assign_report: 'AssignReport',
 };
 
-/** What each write tool's approval names, looked up read-only (see approval.test.ts). */
-export const LOOKED_UP: Readonly<Record<string, string>> = {
-  submit_report: 'Acme web (run by Acme)',
-  mark_notifications_read: 'Your report was graded',
-  update_my_profile: 'Old bio',
+/** The API operation each write tool's payload registers for approval (its mutation's root field). */
+export const APPROVED_OPERATION: Readonly<Record<string, string>> = {
+  submit_report: 'submitReport',
+  add_report_comment: 'addReportComment',
+  raise_appeal: 'raiseAppeal',
+  update_report_status: 'updateReportStatus',
+  add_triage_comment: 'addReportComment',
+  grade_report: 'adjudicateReport',
+  mark_notifications_read: 'markNotificationAsRead',
+  update_my_profile: 'updateResearcherProfile',
+  save_disclosure_draft: 'saveReportDisclosure',
+  assign_report: 'assignTriageAnalyst',
 };

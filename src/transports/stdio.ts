@@ -20,7 +20,7 @@ import type { LocalConfig } from '../config.js';
 import { createGraphQLClient } from '../graphql/client.js';
 import type { Logger } from '../logger.js';
 import { buildServer } from '../server.js';
-import { ApprovalGate, ApprovalReplayGuard } from '../tools/approval.js';
+import { ApprovalGate, pollBudgetFor } from '../tools/approval.js';
 
 export interface RunStdioOptions {
   /** Injectable for tests; defaults to the configured store. */
@@ -58,13 +58,24 @@ export const runStdio = async (
     logger,
   });
   // One process serves one user through one client, and every approval round
-  // comes back to this process: a per-process key and replay memory suffice.
+  // comes back to this process: a per-process key suffices. The decision
+  // itself lives on BugSecure, not here.
   const approvals = new ApprovalGate({
     key: randomBytes(32),
     principal: 'local',
-    replay: new ApprovalReplayGuard(),
     logger,
+    webUrl: config.webUrl,
+    pollIntervalMs: config.approvalPoll.intervalMs,
+    // Under the MCP client's default request timeout, with one write attempt left.
+    pollBudgetMs: pollBudgetFor(config.approvalPoll.budgetMs, config.requestTimeoutMs),
+    writeTimeoutMs: config.requestTimeoutMs,
   });
+  if (config.webUrl === undefined) {
+    logger.warn(
+      'BUGSECURE_WEB_URL is not set and the API is not the default one: write tools will send users to ' +
+        'BugSecure → Settings → Agent approvals instead of opening the review page',
+    );
+  }
 
   try {
     if ((await session.grantedScopes()) === undefined) {
@@ -84,6 +95,7 @@ export const runStdio = async (
         viewerId: () => session.subject().catch(() => undefined),
         readOnly: config.readOnly,
         approvals,
+        writeTimeoutMs: config.requestTimeoutMs,
       }),
     {
       ...(options.transport === undefined ? {} : { transport: options.transport }),

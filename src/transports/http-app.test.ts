@@ -2,12 +2,8 @@ import { type Client, StreamableHTTPClientTransport } from '@modelcontextprotoco
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { fakeAuthorizationServer } from '../../test/helpers/fake-authorization-server.js';
-import { lookups } from '../../test/helpers/fake-graphql.js';
-import {
-  type ApprovalAnswer,
-  type ElicitationPrompt,
-  elicitingClient,
-} from '../../test/helpers/tool-harness.js';
+import { fakeAgentApprovals, type FakeAgentApprovals, lookups } from '../../test/helpers/fake-graphql.js';
+import { type ElicitationPrompt, elicitingClient, type OpenAnswer } from '../../test/helpers/tool-harness.js';
 import { TEST_ISSUER, TEST_RESOURCE, testSigner, type TestSigner } from '../../test/helpers/jwt.js';
 import { createAccessTokenVerifier } from '../auth/hosted/jwt.js';
 import { TokenExchanger } from '../auth/hosted/token-exchange.js';
@@ -32,6 +28,9 @@ const hostedConfig = (env: Record<string, string> = {}): HostedConfig => {
     BUGSECURE_CLIENT_SECRET: 'hosted-secret',
     BUGSECURE_MCP_APPROVAL_KEY: 'approval-key-approval-key-approval-key-0123',
     BUGSECURE_ALLOWED_ORIGINS: 'app.example',
+    BUGSECURE_WEB_URL: 'https://bugsecure.test',
+    BUGSECURE_APPROVAL_POLL_INTERVAL_MS: '100',
+    BUGSECURE_APPROVAL_POLL_BUDGET_MS: '1000',
     ...env,
   });
 };
@@ -40,6 +39,8 @@ interface Setup {
   app: HttpApp;
   apiCalls: { authorization: string | null; body: string }[];
   as: ReturnType<typeof fakeAuthorizationServer>;
+  /** The fake API's agent approvals (the user approves at once). */
+  approvals: FakeAgentApprovals;
 }
 
 /** Answers the API with `api(authorization)` instead of success, when it returns a Response. */
@@ -52,6 +53,7 @@ const setup = (env: Record<string, string> = {}, api?: ApiOverride): Setup => {
     { status: 200, body: { access_token: 'api-token', token_type: 'Bearer', expires_in: 600 } },
   ];
   const apiCalls: Setup['apiCalls'] = [];
+  const approvals = fakeAgentApprovals('approve');
   const apiFetch: typeof fetch = async (_url, init) => {
     const authorization = new Headers(init?.headers).get('authorization');
     apiCalls.push({ authorization, body: typeof init?.body === 'string' ? init.body : '' });
@@ -61,7 +63,7 @@ const setup = (env: Record<string, string> = {}, api?: ApiOverride): Setup => {
     const body = typeof init?.body === 'string' ? init.body : '';
     const { query, variables } = JSON.parse(body) as { query: string; variables?: Record<string, unknown> };
     const operation = /\b(?:query|mutation)\s+(\w+)/.exec(query)?.[1] ?? '';
-    const org = lookups();
+    const org = { ...lookups(), ...approvals.handlers };
     const data =
       operation === 'AddReportComment' || operation === 'AddTriageComment'
         ? {
@@ -106,7 +108,7 @@ const setup = (env: Record<string, string> = {}, api?: ApiOverride): Setup => {
     },
     close: () => app.close(),
   };
-  return { app: withHost, apiCalls, as };
+  return { app: withHost, apiCalls, as, approvals };
 };
 
 const rpc = (method: string, params: Record<string, unknown> = {}) =>
@@ -398,7 +400,7 @@ describe('MCP over the hosted endpoint', () => {
   const connect = async (
     setupResult: Setup,
     token: string,
-    approve: ApprovalAnswer = 'accept',
+    open: OpenAnswer = 'accept',
     prompts: ElicitationPrompt[] = [],
     era: 'modern' | 'legacy' = 'modern',
   ): Promise<Client> => {
@@ -410,7 +412,7 @@ describe('MCP over the hosted endpoint', () => {
       },
     });
     const client = elicitingClient(
-      approve,
+      open,
       prompts,
       era === 'modern' ? { versionNegotiation: { mode: 'auto' } } : {},
     );
@@ -594,29 +596,35 @@ describe('MCP over the hosted endpoint', () => {
       });
       expect(result.isError).toBeFalsy();
       expect(prompts).toHaveLength(1);
+      expect(prompts[0]?.mode).toBe('url');
       const sent = current.apiCalls.map(
         (c) => JSON.parse(c.body) as { query: string; variables?: Record<string, unknown> },
       );
       const write = sent.find((c) => c.query.includes('AddTriageComment'));
-      expect(write?.variables?.clientRequestId).toEqual(expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/));
+      expect(write?.variables?.clientRequestId).toBe(current.approvals.created[0]?.clientRequestId);
     } finally {
       await client.close();
     }
   });
 
-  it('asks the user before a write (elicitation over stateless HTTP), and writes only on approval', async () => {
-    for (const approve of ['accept', 'decline'] as const) {
+  it('sends the user to the review page before a write (URL elicitation over stateless HTTP), and writes only once approved', async () => {
+    for (const open of ['accept', 'decline'] as const) {
       current = setup();
       const prompts: ElicitationPrompt[] = [];
-      const client = await connect(current, await signer.sign({ scope: 'reports:write' }), approve, prompts);
+      const client = await connect(current, await signer.sign({ scope: 'reports:write' }), open, prompts);
       try {
         const result = await client.callTool({
           name: 'add_report_comment',
           arguments: { reportId: 'r1', content: 'Here is the account.' },
         });
-        expect(prompts[0]?.message).toContain('Here is the account.');
-        expect(result.isError ?? false).toBe(approve === 'decline');
-        expect(current.apiCalls).toHaveLength(approve === 'accept' ? 1 : 0);
+        expect(prompts[0]?.mode).toBe('url');
+        expect(prompts[0]?.url).toBe(
+          `https://bugsecure.test/agent-approvals/${current.approvals.created[0]?.id ?? ''}`,
+        );
+        expect(prompts[0]?.message).not.toContain('Here is the account.');
+        expect(result.isError ?? false).toBe(open === 'decline');
+        const writes = current.apiCalls.filter((c) => c.body.includes('AddReportComment'));
+        expect(writes).toHaveLength(open === 'accept' ? 1 : 0);
       } finally {
         await client.close();
         await current.app.close();
@@ -660,7 +668,7 @@ describe('MCP over the hosted endpoint', () => {
     }
   });
 
-  it('refuses writes from a client that cannot show approval prompts', async () => {
+  it('sends a client that cannot open URLs to the menu, registering the approval and writing nothing', async () => {
     current = setup();
     const client = await connect(current, await signer.sign({ scope: 'reports:write' }), 'none');
     try {
@@ -669,8 +677,10 @@ describe('MCP over the hosted endpoint', () => {
         arguments: { reportId: 'r1', content: 'hi' },
       });
       expect(result.isError).toBe(true);
-      expect(JSON.stringify(result.content)).toContain('does not support approval prompts');
-      expect(current.apiCalls).toHaveLength(0);
+      expect(JSON.stringify(result.content)).toContain('Settings → Agent approvals');
+      expect(JSON.stringify(result.content)).not.toContain('agent-approvals/');
+      expect(current.approvals.created).toHaveLength(1);
+      expect(current.apiCalls.filter((c) => c.body.includes('AddReportComment'))).toHaveLength(0);
     } finally {
       await client.close();
     }
@@ -709,7 +719,7 @@ describe('MCP over the hosted endpoint', () => {
         name: 'add_report_comment',
         arguments: { reportId: 'r1', content: 'a' },
       });
-      expect(JSON.stringify(first.content)).toContain('does not support approval prompts');
+      expect(JSON.stringify(first.content)).toContain('Settings → Agent approvals');
       const second = await writer.callTool({
         name: 'add_report_comment',
         arguments: { reportId: 'r1', content: 'a' },

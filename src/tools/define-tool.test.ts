@@ -1,29 +1,36 @@
-import { randomBytes } from 'node:crypto';
-
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import { describe, expect, it } from 'vitest';
 import * as z from 'zod';
 
-import { fakeGraphQL } from '../../test/helpers/fake-graphql.js';
+import { fakeAgentApprovals, fakeGraphQL } from '../../test/helpers/fake-graphql.js';
+import { testGate } from '../../test/helpers/tool-harness.js';
 import { BugSecureError } from '../errors.js';
+import { AddReportCommentDocument, SearchProgramsDocument } from '../graphql/generated.js';
 import { createLogger, silentLogger } from '../logger.js';
 import type { Scope } from '../scopes.js';
-import { ApprovalGate, ApprovalReplayGuard } from './approval.js';
 import {
   type AnyTool,
+  approvedWrite,
   defineTool,
   invokeTool,
   isToolAllowed,
+  mutation,
+  type Parts,
+  partKey,
   type RegisterToolsOptions,
+  releaseRequestDeadline,
+  requestDeadline,
   selectTools,
   SessionMemo,
   type ToolDefinition,
   ToolDefinitionError,
+  type WritePayload,
 } from './define-tool.js';
 import { ALL_TOOLS } from './index.js';
+import { ExpiringLru } from '../lru.js';
 import { mapGraphQLErrors } from '../graphql/errors.js';
 
-type Def = ToolDefinition<z.ZodObject, z.ZodObject>;
+type Def = ToolDefinition<z.ZodObject, z.ZodObject, Parts>;
 
 const base: Def = {
   name: 'sample_tool',
@@ -36,13 +43,15 @@ const base: Def = {
   handler: () => Promise.resolve({ data: { n: 1 } }),
 };
 
-const writePrompt = { action: 'do a sample write', audience: 'Nobody.', irreversible: false, fields: [] };
+const samplePart = () =>
+  mutation(AddReportCommentDocument, { input: { reportId: 'r1', content: 'hi', isInternal: false } });
+const writePayload: WritePayload = { action: 'do a sample write', parts: [samplePart()] };
 const write: Def = {
   ...base,
   name: 'sample_write',
   requiredScopes: ['programs:read', 'reports:write'],
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-  approval: () => writePrompt,
+  payload: () => writePayload,
 };
 
 const optionsWith = (granted: readonly Scope[] | 'signed-out' = ['programs:read']): RegisterToolsOptions => {
@@ -52,12 +61,7 @@ const optionsWith = (granted: readonly Scope[] | 'signed-out' = ['programs:read'
     logger: silentLogger,
     graphql: fakeGraphQL({}),
     grantedScopes: () => Promise.resolve(scopes),
-    approvals: new ApprovalGate({
-      key: randomBytes(32),
-      principal: 'test',
-      replay: new ApprovalReplayGuard(),
-      logger: silentLogger,
-    }),
+    approvals: testGate(),
   };
 };
 const options = optionsWith();
@@ -76,7 +80,7 @@ describe('defineTool invariants', () => {
 
   it.each<[string, Partial<Def>]>([
     ['bad name', { name: 'Search-Programs' }],
-    ['read tool with an approval prompt', { approval: () => writePrompt }],
+    ['read tool with a payload to approve', { payload: () => writePayload }],
     ['empty title', { title: ' ' }],
     ['vague description', { description: 'Does it.' }],
     ['duplicate scopes', { requiredScopes: ['programs:read', 'programs:read'] }],
@@ -102,8 +106,8 @@ describe('defineTool invariants', () => {
     expect(() => defineTool({ ...base, ...patch })).toThrow(ToolDefinitionError);
   });
 
-  it('rejects a write tool that does not describe its payload for approval', () => {
-    const withoutApproval: Def = {
+  it('rejects a write tool that does not describe the mutations it sends', () => {
+    const withoutPayload: Def = {
       name: write.name,
       title: write.title,
       description: write.description,
@@ -113,12 +117,104 @@ describe('defineTool invariants', () => {
       output: write.output,
       handler: () => Promise.resolve({ data: { n: 1 } }),
     };
-    expect(() => defineTool(withoutApproval)).toThrow(/approval/);
+    expect(() => defineTool(withoutPayload)).toThrow(/payload/);
   });
 
   it('every registered tool has a unique name', () => {
     const names = ALL_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+describe('mutation()', () => {
+  it('names the API operation from the document and keeps the exact variables, minus the key', () => {
+    const part = samplePart();
+    expect(part.operation).toBe('addReportComment');
+    expect(part.variables).toEqual({ input: { reportId: 'r1', content: 'hi', isInternal: false } });
+    expect(Object.isFrozen(part)).toBe(true);
+    expect(Object.isFrozen(part.variables)).toBe(true);
+  });
+
+  it('refuses a document that is not an approvable mutation', () => {
+    expect(() => mutation(SearchProgramsDocument as never, { query: 'x' } as never)).toThrow(
+      /not an operation BugSecure lets a connected app perform/,
+    );
+  });
+
+  it('sends the document with the variables plus the key it is given', async () => {
+    const graphql = fakeGraphQL({ AddReportComment: () => ({ addReportComment: { id: 'c1' } }) });
+    const part = samplePart();
+    await part.perform(graphql, 'k'.repeat(22), { signal });
+    expect(graphql.calls).toEqual([
+      {
+        operation: 'AddReportComment',
+        variables: {
+          input: { reportId: 'r1', content: 'hi', isInternal: false },
+          clientRequestId: 'k'.repeat(22),
+        },
+      },
+    ]);
+  });
+});
+
+describe('approvedWrite', () => {
+  const base = 'b'.repeat(22);
+
+  it('keys a single part with the approval’s key, and several parts with one derived key each', () => {
+    expect(partKey(base, 0, 1)).toBe(base);
+    expect(partKey(base, 0, 3)).toBe(`${base}-0`);
+    expect(partKey(base, 2, 3)).toBe(`${base}-2`);
+  });
+
+  /** A call with ample time left for every part. */
+  const ROOMY = { deadlineAt: Date.now() + 600_000, writeTimeoutMs: 20_000 };
+
+  it('does not start a part whose write could not answer before the call’s deadline', async () => {
+    const graphql = fakeGraphQL({ AddReportComment: () => ({ addReportComment: { id: 'c1' } }) });
+    // Room for the least write attempt and the answer: the first part goes, the second is refused.
+    const tight = { deadlineAt: Date.now() + 1_000 + 2_000 + 20, writeTimeoutMs: 20_000 };
+    const write = approvedWrite([samplePart(), samplePart()], base, graphql, signal, tight);
+    await write.parts[0]!.send();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const refused = await write.parts[1]!.send().catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(BugSecureError);
+    expect((refused as BugSecureError).code).toBe('CALL_DEADLINE');
+    expect((refused as BugSecureError).message).toContain('Part 2 of 2 was not sent');
+    expect(graphql.calls.map((c) => c.variables.clientRequestId)).toEqual([`${base}-0`]);
+  });
+
+  it('gives a write attempt only what is left of the call, not the API client’s whole timeout', async () => {
+    // The API never answers; the attempt is cut at the call's deadline (minus the margin), not at 20 s,
+    // and that is a timeout of the write (typed, so the handler's unknown-outcome path runs), not a
+    // cancellation of the call.
+    const graphql = fakeGraphQL({ AddReportComment: () => new Promise(() => undefined) });
+    const short = {
+      deadlineAt: Date.now() + 60,
+      writeTimeoutMs: 20_000,
+      answerMarginMs: 0,
+      minWriteAttemptMs: 1,
+    };
+    const write = approvedWrite([samplePart()], base, graphql, signal, short);
+    const started = Date.now();
+    await expect(write.part.send()).rejects.toMatchObject({ code: 'UPSTREAM_UNAVAILABLE' });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(graphql.calls).toHaveLength(1);
+  });
+
+  it('sends each part once, and `part` is only for a single-part payload', async () => {
+    const graphql = fakeGraphQL({ AddReportComment: () => ({ addReportComment: { id: 'c1' } }) });
+    const one = approvedWrite([samplePart()], base, graphql, signal, ROOMY);
+    await one.part.send();
+    await expect(one.part.send()).rejects.toThrow(/only once/);
+    expect(graphql.calls.map((c) => c.variables.clientRequestId)).toEqual([base]);
+
+    const several = approvedWrite([samplePart(), samplePart()], base, graphql, signal, ROOMY);
+    expect(() => several.part).toThrow(/several parts/);
+    await Promise.all(several.parts.map((p) => p.send({ signal })));
+    expect(graphql.calls.slice(1).map((c) => c.variables.clientRequestId)).toEqual([
+      `${base}-0`,
+      `${base}-1`,
+    ]);
   });
 });
 
@@ -182,6 +278,18 @@ describe('invokeTool', () => {
     expect(ran).toBe(false);
   });
 
+  it('gives a read tool no write handle', async () => {
+    const tool = {
+      ...base,
+      handler: (_input: unknown, context: { approved: { parts: readonly unknown[]; part: unknown } }) => {
+        expect(context.approved.parts).toEqual([]);
+        expect(() => context.approved.part).toThrow(/read tool/);
+        return Promise.resolve({ data: { n: 1 } });
+      },
+    } as unknown as Def;
+    expect((await run(tool)).isError).toBeFalsy();
+  });
+
   it('fails closed when a tool breaks its own output schema', async () => {
     const tool = { ...base, handler: () => Promise.resolve({ data: { n: 'x' } }) } as unknown as Def;
     const result = await run(tool);
@@ -224,6 +332,7 @@ describe('invokeTool', () => {
     const tool = { ...base, handler: () => Promise.reject(new Error('aborted')) } as Def;
     await expect(invokeTool(tool, {}, { signal: controller.signal }, options)).rejects.toThrow('aborted');
   });
+
   it('fences text the API sent back in an error, never relaying it bare', async () => {
     const tool = {
       ...base,
@@ -247,25 +356,85 @@ describe('invokeTool', () => {
     expect(message.match(/<\/untrusted-content-[0-9a-f]{16}>/g)).toHaveLength(1);
   });
 
-  it('passes the approval a context it can look things up with, and refuses before asking', async () => {
+  const mcpCtx = (state?: string): never =>
+    ({
+      mcpReq: {
+        requestState: () => state,
+        inputResponses: state === undefined ? undefined : { approval: { action: 'accept' } },
+      },
+    }) as never;
+
+  it('passes the payload builder a context it can look things up with, and refuses before asking', async () => {
     const seen: unknown[] = [];
     const refusing = {
       ...write,
-      approval: (_input: unknown, context: { granted: ReadonlySet<Scope>; viewerId: string | undefined }) => {
+      payload: (_input: unknown, context: { granted: ReadonlySet<Scope>; viewerId: string | undefined }) => {
         seen.push([...context.granted], context.viewerId);
         throw new BugSecureError('PLATFORM_STAFF', 'staff');
       },
     } as unknown as Def;
-    const ctx = { mcpReq: { requestState: () => undefined, inputResponses: undefined } } as never;
+    const approvals = fakeAgentApprovals('approve');
     const result = (await invokeTool(
       refusing,
       {},
-      { signal, ctx, clientCapabilities: { elicitation: {} } },
-      { ...optionsWith(['programs:read', 'reports:write']), viewerId: () => Promise.resolve('u1') },
+      { signal, ctx: mcpCtx(), clientCapabilities: { elicitation: { url: {} } } },
+      {
+        ...optionsWith(['programs:read', 'reports:write']),
+        graphql: fakeGraphQL(approvals.handlers),
+        viewerId: () => Promise.resolve('u1'),
+      },
     )) as CallToolResult;
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toContain('admin tools');
     expect(seen).toEqual([['programs:read', 'reports:write'], 'u1']);
+    expect(approvals.created).toEqual([]);
+  });
+
+  it('runs the payload on both rounds, and hands the handler the approved parts only', async () => {
+    let built = 0;
+    const approvals = fakeAgentApprovals('approve');
+    const graphql = fakeGraphQL({
+      ...approvals.handlers,
+      AddReportComment: () => ({ addReportComment: { id: 'c1' } }),
+    });
+    const tool = {
+      ...write,
+      payload: () => {
+        built += 1;
+        return writePayload;
+      },
+      handler: async (_input: unknown, context: { approved: { part: { send(): Promise<unknown> } } }) => {
+        const sent = (await context.approved.part.send()) as { addReportComment: { id: string } };
+        return { data: { n: sent.addReportComment.id === 'c1' ? 1 : 0 } };
+      },
+    } as unknown as Def;
+    const opts = { ...optionsWith(['programs:read', 'reports:write']), graphql };
+    const caps = { elicitation: { url: {} } };
+    const first = await invokeTool(tool, {}, { signal, ctx: mcpCtx(), clientCapabilities: caps }, opts);
+    expect(first).toMatchObject({ resultType: 'input_required' });
+    const state = (first as { requestState?: string }).requestState;
+    const second = (await invokeTool(
+      tool,
+      {},
+      { signal, ctx: mcpCtx(state), clientCapabilities: caps },
+      opts,
+    )) as CallToolResult;
+    expect(second.structuredContent).toEqual({ n: 1 });
+    expect(built).toBe(2);
+    expect(graphql.calls.at(-1)?.variables.clientRequestId).toBe(approvals.created[0]?.clientRequestId);
+  });
+
+  it('refuses a payload without parts before anything is registered', async () => {
+    const approvals = fakeAgentApprovals('approve');
+    const empty = { ...write, payload: () => ({ action: 'nothing', parts: [] }) } as unknown as Def;
+    const result = (await invokeTool(
+      empty,
+      {},
+      { signal, ctx: mcpCtx(), clientCapabilities: { elicitation: { url: {} } } },
+      { ...optionsWith(['programs:read', 'reports:write']), graphql: fakeGraphQL(approvals.handlers) },
+    )) as CallToolResult;
+    expect(result.isError).toBe(true);
+    expect(approvals.created).toEqual([]);
   });
 });
 
@@ -298,5 +467,34 @@ describe('defineTool optional scopes', () => {
     // A write scope that also grants a read may be used for that read.
     expect(() => defineTool({ ...base, optionalScopes: ['disclosures:write'] })).not.toThrow();
     expect(() => defineTool({ ...base, optionalScopes: ['profile:write'] })).toThrow(/must be read scopes/);
+  });
+});
+
+describe('the call deadline remembered per SDK request', () => {
+  const callFor = (id: number | string, sessionId?: string) =>
+    ({ ctx: { sessionId, mcpReq: { id } } }) as unknown as Parameters<typeof requestDeadline>[1];
+
+  it('is the same for the legacy shim’s re-entry, distinct for other ids, and released once answered', () => {
+    const memory = { clientDeadlineMs: 60_000, callDeadlines: new ExpiringLru<string, number>(10) };
+    const first = requestDeadline(memory, callFor(1));
+    expect(requestDeadline(memory, callFor(1))).toBe(first);
+    // 1 and "1" are distinct JSON-RPC ids; so are the same id on two sessions.
+    const asString = requestDeadline(memory, callFor('1'));
+    expect(requestDeadline(memory, callFor('1'))).toBe(asString);
+    expect(requestDeadline(memory, callFor(1, 'other-session'))).toBeGreaterThanOrEqual(first);
+    expect(memory.callDeadlines.size).toBe(3);
+    // Answered: a later request reusing the id starts its own clock.
+    releaseRequestDeadline(memory, callFor(1));
+    expect(memory.callDeadlines.size).toBe(2);
+    memory.clientDeadlineMs = 1;
+    expect(requestDeadline(memory, callFor(1))).toBeLessThan(first);
+  });
+
+  it('starts its own clock without a request id or a memory', () => {
+    const memory = { clientDeadlineMs: 60_000, callDeadlines: new ExpiringLru<string, number>(10) };
+    expect(requestDeadline(memory, { ctx: undefined })).toBeGreaterThan(Date.now() + 59_000);
+    expect(memory.callDeadlines.size).toBe(0);
+    expect(requestDeadline({ clientDeadlineMs: 60_000 }, callFor(1))).toBeGreaterThan(Date.now() + 59_000);
+    releaseRequestDeadline({}, callFor(1)); // nothing to release, nothing thrown
   });
 });

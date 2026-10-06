@@ -12,7 +12,7 @@ export const serverInstructions = (options: { readOnly: boolean }): string => {
     '',
     options.readOnly
       ? 'This server is running read-only: no tool can change anything on BugSecure.'
-      : 'Tools that change state (reports, comments, appeals, status changes, assignments, grades, disclosure drafts, profile edits, marking notifications read) act as the user, and most are visible to other people. Only call them when the user has clearly asked for that specific action. BugSecure then shows the user the exact content in an approval prompt; if they decline, do not retry unless they ask. Nothing here accepts terms or publishes a disclosure: those happen on the BugSecure website.',
+      : 'Tools that change state (reports, comments, appeals, status changes, assignments, grades, disclosure drafts, profile edits, marking notifications read) act as the user, and most are visible to other people. Only call them when the user has clearly asked for that specific action. BugSecure then asks the user to review and approve the exact content on the BugSecure website; nothing is sent until they do. If a tool says it is awaiting the user’s decision, or that the user must open BugSecure → Settings → Agent approvals, ask the user and call the tool again, with the same arguments, only when they say they approved; never retry on your own. If they decline, do not retry unless they ask. Nothing here accepts terms or publishes a disclosure: those happen on the BugSecure website.',
     '',
     'Organisations grade the reports submitted to their programmes; BugSecure is the neutral third party (it re-examines appealed grades and reviews Critical ones).',
     '',

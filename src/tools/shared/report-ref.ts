@@ -1,62 +1,39 @@
 /**
- * What a report id refers to, looked up before a write: shown in the approval
- * prompt next to the id (so the user approves "comment on 'Stored XSS in …'",
- * not on an opaque id), and used to check which side of the report the
- * caller acts on.
+ * Whose report a report id refers to, looked up before a write: used to check
+ * which side of the report the caller acts on. The review page on BugSecure
+ * shows the user what the id refers to; nothing is looked up here for display.
  */
 import { BugSecureError } from '../../errors.js';
 import type { GetReportRefQuery } from '../../graphql/generated.js';
-import type { ApprovalPrompt } from '../approval.js';
 import type { ToolContext } from '../define-tool.js';
 import { assertNotOwnReport, requireViewerWhenAmbiguous } from './report.js';
 
 export type ReportRef = NonNullable<GetReportRefQuery['report']>;
 
 export interface ReportLookup {
-  /** The report, or undefined when it could not be looked up (see `notes`). */
+  /** The report, or undefined when it could not be looked up (not readable, not visible, or failed). */
   readonly report: ReportRef | undefined;
-  readonly notes: string[];
 }
 
 /**
  * Look the report up if this connection can read it (reports:read or
- * triage:read). Never throws for a failed lookup: the prompt then shows the
- * id only and says why. `fetch` sends GetReportRef from the calling tool's file.
+ * triage:read). Never throws for a failed lookup: the caller then decides
+ * whether it can proceed without knowing whose report it is. `fetch` sends
+ * GetReportRef from the calling tool's file.
  */
 export const lookupReport = async (
   context: Pick<ToolContext, 'granted' | 'signal'>,
   fetch: () => Promise<GetReportRefQuery>,
 ): Promise<ReportLookup> => {
-  if (!context.granted.has('reports:read') && !context.granted.has('triage:read')) {
-    return {
-      report: undefined,
-      notes: ['The report’s title is not shown: this connection lacks reports:read and triage:read.'],
-    };
-  }
+  if (!context.granted.has('reports:read') && !context.granted.has('triage:read'))
+    return { report: undefined };
   try {
     const { report } = await fetch();
-    if (report === null) {
-      return { report: undefined, notes: ['This report is not visible to your account; check the id.'] };
-    }
-    return { report, notes: [] };
+    return { report: report ?? undefined };
   } catch (error) {
     if (context.signal.aborted) throw error;
-    return { report: undefined, notes: ['Could not look up the report; only its id is shown.'] };
+    return { report: undefined };
   }
-};
-
-/** Approval-prompt context lines for a looked-up report. */
-export const reportContext = (
-  report: ReportRef | undefined,
-  options: { readonly researcher?: boolean } = {},
-): NonNullable<ApprovalPrompt['context']> => {
-  if (report === undefined) return [];
-  return [
-    ['Report', report.title],
-    ['Programme', report.program?.title],
-    ['Status now', report.status],
-    ...(options.researcher === true ? ([['Researcher', report.reporter.username]] as const) : []),
-  ];
 };
 
 /**
@@ -91,7 +68,7 @@ export const requireSideKnown = (report: ReportRef | undefined, bothSides: boole
  * access disabled, rate limit…) is passed on as it is, so the user is told
  * what to do about it.
  *
- * Called from the tool's approval AND its handler, as the staff check is.
+ * Called from the tool's payload, which runs before asking AND before sending.
  */
 export const orgSideReport = async (
   context: Pick<ToolContext, 'granted' | 'signal' | 'viewerId'>,

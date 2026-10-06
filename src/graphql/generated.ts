@@ -33,6 +33,30 @@ export type AdjudicationSide =
   | 'ORGANIZATION'
   | 'PLATFORM';
 
+export type AgentApprovableOperation =
+  | 'addReportComment'
+  | 'adjudicateReport'
+  | 'assignTriageAnalyst'
+  | 'markAllNotificationsAsRead'
+  | 'markNotificationAsRead'
+  | 'raiseAppeal'
+  | 'saveReportDisclosure'
+  | 'submitReport'
+  | 'updateReportStatus'
+  | 'updateResearcherProfile';
+
+export type AgentApprovalPartInput = {
+  readonly arguments: unknown;
+  readonly operation: AgentApprovableOperation;
+};
+
+export type AgentApprovalStatus =
+  | 'APPROVED'
+  | 'CONSUMED'
+  | 'DECLINED'
+  | 'EXPIRED'
+  | 'PENDING';
+
 export type AmountBasis =
   | 'ASSESSOR_OVERRIDE'
   | 'GRID_FLOOR'
@@ -65,6 +89,11 @@ export type CertificateStatus =
   | 'UNDER_APPEAL'
   | 'VOID';
 
+export type CreateAgentApprovalInput = {
+  readonly clientDigest: string;
+  readonly parts: ReadonlyArray<AgentApprovalPartInput>;
+};
+
 export type CriticalReviewOutcome =
   | 'CHANGED'
   | 'CONFIRMED'
@@ -92,6 +121,7 @@ export type KycStatus =
   | 'REJECTED';
 
 export type NotificationType =
+  | 'AGENT_APPROVAL_REQUESTED'
   | 'APPEAL_DECIDED'
   | 'APPEAL_RAISED'
   | 'BADGE_EARNED'
@@ -109,7 +139,9 @@ export type NotificationType =
   | 'SETTLEMENT_ATTESTED'
   | 'SETTLEMENT_CONFIRMED'
   | 'SETTLEMENT_DISPUTED'
+  | 'SETTLEMENT_PROOF_UPDATED'
   | 'SUBSCRIPTION_ACTIVATED'
+  | 'SUPPORT_MESSAGE'
   | 'USER_PENDING_APPROVAL';
 
 export type ProgramFilterInput = {
@@ -235,6 +267,31 @@ export type AddTriageCommentMutationVariables = Exact<{
 
 
 export type AddTriageCommentMutation = { readonly addReportComment: { readonly id: string, readonly reportId: string, readonly isInternal: boolean, readonly createdAt: string } };
+
+export type AgentApprovalRefFragment = { readonly id: string, readonly status: AgentApprovalStatus, readonly reviewUrl: string, readonly expiresAt: string, readonly clientRequestId: string };
+
+export type CreateAgentApprovalMutationVariables = Exact<{
+  input: CreateAgentApprovalInput;
+  clientRequestId: string;
+}>;
+
+
+export type CreateAgentApprovalMutation = { readonly createAgentApproval: { readonly id: string, readonly status: AgentApprovalStatus, readonly reviewUrl: string, readonly expiresAt: string, readonly clientRequestId: string } };
+
+export type GetAgentApprovalQueryVariables = Exact<{
+  id: string | number;
+}>;
+
+
+export type GetAgentApprovalQuery = { readonly agentApproval: { readonly id: string, readonly status: AgentApprovalStatus, readonly reviewUrl: string, readonly expiresAt: string, readonly clientRequestId: string } };
+
+export type ListMyAgentApprovalsQueryVariables = Exact<{
+  clientDigest: string;
+  statuses: ReadonlyArray<AgentApprovalStatus> | AgentApprovalStatus;
+}>;
+
+
+export type ListMyAgentApprovalsQuery = { readonly myAgentApprovals: ReadonlyArray<{ readonly id: string, readonly status: AgentApprovalStatus, readonly reviewUrl: string, readonly expiresAt: string, readonly clientRequestId: string }> };
 
 export type AssignReportMutationVariables = Exact<{
   reportId: string | number;
@@ -466,31 +523,14 @@ export type GetReportRefQueryVariables = Exact<{
 }>;
 
 
-export type GetReportRefQuery = { readonly report: { readonly id: string, readonly title: string, readonly status: ReportStatus, readonly program: { readonly id: string, readonly title: string } | null, readonly reporter: { readonly id: string, readonly username: string }, readonly assignedTriage: { readonly id: string, readonly username: string } | null } | null };
-
-export type GetProgramRefQueryVariables = Exact<{
-  id: string | number;
-}>;
-
-
-export type GetProgramRefQuery = { readonly program: { readonly id: string, readonly title: string, readonly organization: { readonly name: string } | null } | null };
+export type GetReportRefQuery = { readonly report: { readonly id: string, readonly reporter: { readonly id: string } } | null };
 
 export type GetAppealTargetQueryVariables = Exact<{
   reportId: string | number;
 }>;
 
 
-export type GetAppealTargetQuery = { readonly report: { readonly id: string, readonly title: string, readonly reporter: { readonly id: string } } | null, readonly reportAdjudication: { readonly id: string, readonly severity: SeverityLevel, readonly amount: number | null, readonly currency: CurrencyCode, readonly side: AdjudicationSide } | null };
-
-export type GetUnreadNotificationsQueryVariables = Exact<{ [key: string]: never; }>;
-
-
-export type GetUnreadNotificationsQuery = { readonly unreadNotificationCount: number, readonly notifications: ReadonlyArray<{ readonly id: string, readonly title: string }> };
-
-export type GetMyProfileRefQueryVariables = Exact<{ [key: string]: never; }>;
-
-
-export type GetMyProfileRefQuery = { readonly me: { readonly id: string, readonly roles: ReadonlyArray<BountyUserRole> }, readonly myProfile: { readonly bio: string | null, readonly website: string | null, readonly country: string | null } | null };
+export type GetAppealTargetQuery = { readonly report: { readonly id: string, readonly reporter: { readonly id: string } } | null, readonly reportAdjudication: { readonly id: string } | null };
 
 export type MarkNotificationReadMutationVariables = Exact<{
   id: string | number;
@@ -599,6 +639,15 @@ export class TypedDocumentString<TResult, TVariables>
     return this.value;
   }
 }
+export const AgentApprovalRefFragmentDoc = new TypedDocumentString(`
+    fragment AgentApprovalRef on AgentApprovalModel {
+  id
+  status
+  reviewUrl
+  expiresAt
+  clientRequestId
+}
+    `, {"fragmentName":"AgentApprovalRef"}) as unknown as TypedDocumentString<AgentApprovalRefFragment, unknown>;
 export const CertificateFieldsFragmentDoc = new TypedDocumentString(`
     fragment CertificateFields on PayoutCertificateModel {
   id
@@ -852,6 +901,45 @@ export const AddTriageCommentDocument = new TypedDocumentString(`
   }
 }
     `) as unknown as TypedDocumentString<AddTriageCommentMutation, AddTriageCommentMutationVariables>;
+export const CreateAgentApprovalDocument = new TypedDocumentString(`
+    mutation CreateAgentApproval($input: CreateAgentApprovalInput!, $clientRequestId: String!) {
+  createAgentApproval(input: $input, clientRequestId: $clientRequestId) {
+    ...AgentApprovalRef
+  }
+}
+    fragment AgentApprovalRef on AgentApprovalModel {
+  id
+  status
+  reviewUrl
+  expiresAt
+  clientRequestId
+}`) as unknown as TypedDocumentString<CreateAgentApprovalMutation, CreateAgentApprovalMutationVariables>;
+export const GetAgentApprovalDocument = new TypedDocumentString(`
+    query GetAgentApproval($id: ID!) {
+  agentApproval(id: $id) {
+    ...AgentApprovalRef
+  }
+}
+    fragment AgentApprovalRef on AgentApprovalModel {
+  id
+  status
+  reviewUrl
+  expiresAt
+  clientRequestId
+}`) as unknown as TypedDocumentString<GetAgentApprovalQuery, GetAgentApprovalQueryVariables>;
+export const ListMyAgentApprovalsDocument = new TypedDocumentString(`
+    query ListMyAgentApprovals($clientDigest: String!, $statuses: [AgentApprovalStatus!]!) {
+  myAgentApprovals(clientDigest: $clientDigest, statuses: $statuses) {
+    ...AgentApprovalRef
+  }
+}
+    fragment AgentApprovalRef on AgentApprovalModel {
+  id
+  status
+  reviewUrl
+  expiresAt
+  clientRequestId
+}`) as unknown as TypedDocumentString<ListMyAgentApprovalsQuery, ListMyAgentApprovalsQueryVariables>;
 export const AssignReportDocument = new TypedDocumentString(`
     mutation AssignReport($reportId: ID!, $triageUserId: ID!, $clientRequestId: String!) {
   assignTriageAnalyst(
@@ -1629,74 +1717,25 @@ export const GetReportRefDocument = new TypedDocumentString(`
     query GetReportRef($id: ID!) {
   report(id: $id) {
     id
-    title
-    status
-    program {
-      id
-      title
-    }
     reporter {
       id
-      username
-    }
-    assignedTriage {
-      id
-      username
     }
   }
 }
     `) as unknown as TypedDocumentString<GetReportRefQuery, GetReportRefQueryVariables>;
-export const GetProgramRefDocument = new TypedDocumentString(`
-    query GetProgramRef($id: ID!) {
-  program(id: $id) {
-    id
-    title
-    organization {
-      name
-    }
-  }
-}
-    `) as unknown as TypedDocumentString<GetProgramRefQuery, GetProgramRefQueryVariables>;
 export const GetAppealTargetDocument = new TypedDocumentString(`
     query GetAppealTarget($reportId: ID!) {
   report(id: $reportId) {
     id
-    title
     reporter {
       id
     }
   }
   reportAdjudication(reportId: $reportId) {
     id
-    severity
-    amount
-    currency
-    side
   }
 }
     `) as unknown as TypedDocumentString<GetAppealTargetQuery, GetAppealTargetQueryVariables>;
-export const GetUnreadNotificationsDocument = new TypedDocumentString(`
-    query GetUnreadNotifications {
-  notifications(skip: 0, take: 50, unreadOnly: true) {
-    id
-    title
-  }
-  unreadNotificationCount
-}
-    `) as unknown as TypedDocumentString<GetUnreadNotificationsQuery, GetUnreadNotificationsQueryVariables>;
-export const GetMyProfileRefDocument = new TypedDocumentString(`
-    query GetMyProfileRef {
-  me {
-    id
-    roles
-  }
-  myProfile {
-    bio
-    website
-    country
-  }
-}
-    `) as unknown as TypedDocumentString<GetMyProfileRefQuery, GetMyProfileRefQueryVariables>;
 export const MarkNotificationReadDocument = new TypedDocumentString(`
     mutation MarkNotificationRead($id: ID!, $clientRequestId: String!) {
   markNotificationAsRead(id: $id, clientRequestId: $clientRequestId)

@@ -31,7 +31,7 @@ import { type FetchFn, readTextCapped, ResponseTooLargeError } from '../http.js'
 import type { Logger } from '../logger.js';
 import { type RateLimitDecision, RateLimiter } from '../rate-limit.js';
 import { HOSTED_INITIAL_SCOPES, NO_STEP_UP_SCOPES, type Scope } from '../scopes.js';
-import { ApprovalGate, ApprovalReplayGuard } from '../tools/approval.js';
+import { ApprovalGate, CLIENT_REQUEST_DEADLINE_MS, pollBudgetFor } from '../tools/approval.js';
 import { type AnyTool, isWriteTool } from '../tools/define-tool.js';
 import { ALL_TOOLS } from '../tools/index.js';
 import { buildServer } from '../server.js';
@@ -157,11 +157,17 @@ export const createHttpApp = (options: HttpAppOptions): HttpApp => {
 
   // Shared by every request this process serves.
   const approvalKey = deriveKey(config.approvalKey, 'mcp requestState v1');
-  const replay = new ApprovalReplayGuard();
+  if (config.webUrl === undefined) {
+    logger.warn(
+      'BUGSECURE_WEB_URL is not set and the API is not the default one: write tools will send users to ' +
+        'BugSecure → Settings → Agent approvals instead of opening the review page',
+    );
+  }
   const clock = options.now === undefined ? {} : { now: options.now };
   const { perMinute, burst, writesPerMinute, writeBurst, maxKeys } = config.rateLimit;
   // Per (user, client); per user whatever the client (a user can register many clients);
-  // and a tighter per-user budget for write tools.
+  // and a tighter per-user budget for write tools (an approved write is two or more calls:
+  // the one that asks, and the one or more that wait for and carry the decision).
   const perClient = new RateLimiter({ perMinute, burst, maxKeys, ...clock });
   const perUser = new RateLimiter({ perMinute: perMinute * 2, burst: burst * 2, maxKeys, ...clock });
   const writes = new RateLimiter({ perMinute: writesPerMinute, burst: writeBurst, maxKeys, ...clock });
@@ -170,6 +176,10 @@ export const createHttpApp = (options: HttpAppOptions): HttpApp => {
   // Verified tokens by AuthInfo identity: the SDK passes AuthInfo through to
   // the per-request factory untouched.
   const verified = new WeakMap<AuthInfo, VerifiedAccessToken>();
+  // When each request arrived, by the same identity: the call's deadline runs from there, so the
+  // time authentication and a cold token exchange took is not spent twice.
+  const arrivedAt = new WeakMap<AuthInfo, number>();
+  const requestDeadlineMs = Math.min(CLIENT_REQUEST_DEADLINE_MS, config.requestTimeoutMs * 3);
 
   const handler: McpHttpHandler = createMcpHandler(
     ({ authInfo }) => {
@@ -196,7 +206,23 @@ export const createHttpApp = (options: HttpAppOptions): HttpApp => {
         approvedScopes: () => Promise.resolve(subject.scopes),
         viewerId: () => Promise.resolve(subject.subject),
         readOnly: config.readOnly,
-        approvals: new ApprovalGate({ key: approvalKey, principal, replay, logger: callerLogger }),
+        approvals: new ApprovalGate({
+          key: approvalKey,
+          principal,
+          logger: callerLogger,
+          webUrl: config.webUrl,
+          pollIntervalMs: config.approvalPoll.intervalMs,
+          // Under the MCP client's deadline and the Node adapter's (three request timeouts), with one write attempt left.
+          pollBudgetMs: pollBudgetFor(
+            config.approvalPoll.budgetMs,
+            config.requestTimeoutMs,
+            config.requestTimeoutMs * 3,
+          ),
+          writeTimeoutMs: config.requestTimeoutMs,
+        }),
+        deadlineAt: () =>
+          (authInfo ? (arrivedAt.get(authInfo) ?? Date.now()) : Date.now()) + requestDeadlineMs,
+        writeTimeoutMs: config.requestTimeoutMs,
         rateLimit: (toolName) => {
           const user = JSON.stringify([subject.subject]);
           // In order, stopping at the first refusal: a refused call takes nothing from the
@@ -322,6 +348,7 @@ export const createHttpApp = (options: HttpAppOptions): HttpApp => {
   };
 
   const serveMcp = async (request: Request): Promise<Response> => {
+    const arrived = Date.now();
     const hostRejected = hostHeaderValidationResponse(request, [...config.allowedHosts]);
     if (hostRejected) return hostRejected;
     // Requests from browsers carry Origin; only allowlisted origins may talk to us.
@@ -397,6 +424,7 @@ export const createHttpApp = (options: HttpAppOptions): HttpApp => {
       resource: resourceUrl,
     };
     verified.set(authInfo, subject);
+    arrivedAt.set(authInfo, arrived);
 
     const response = await handler.fetch(request, { authInfo, parsedBody: body });
     // The AS refused to exchange the token while this request was served, so

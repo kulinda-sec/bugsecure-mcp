@@ -1,46 +1,16 @@
 import * as z from 'zod';
 
-import { BugSecureError } from '../errors.js';
-import { GetMyProfileRefDocument, UpdateMyProfileDocument } from '../graphql/generated.js';
+import { UpdateMyProfileDocument } from '../graphql/generated.js';
 import { hasControlCharacters, untrusted } from '../untrusted.js';
-import type { ApprovalPrompt } from './approval.js';
 import { userText, wrapped } from './shared/common.js';
-import { defineTool, type ToolContext } from './define-tool.js';
+import { defineTool, mutation } from './define-tool.js';
 
 type Field = 'bio' | 'website' | 'country';
-const LABELS: Readonly<Record<Field, string>> = { bio: 'Bio', website: 'Website', country: 'Country' };
+const LABELS: Readonly<Record<Field, string>> = { bio: 'bio', website: 'website', country: 'country' };
 
 const WEBSITE = /^https?:\/\/[^\s/?#]+[^\s]*$/;
 /** The API takes the country as an ISO 3166-1 alpha-2 code and refuses a name. */
 const COUNTRY_CODE = /^[A-Za-z]{2}$/;
-
-/** The profile as it is now, shown next to the new values; refuses a non-researcher before asking. */
-const currentProfile = async (
-  changed: readonly Field[],
-  { graphql, signal, granted }: ToolContext,
-): Promise<Pick<ApprovalPrompt, 'context' | 'notes'>> => {
-  if (!granted.has('profile:read'))
-    return { notes: ['Your current profile is not shown: this connection lacks profile:read.'] };
-  let current;
-  try {
-    current = await graphql.request(GetMyProfileRefDocument, {}, { signal });
-  } catch (error) {
-    if (signal.aborted) throw error;
-    return { notes: ['Could not look up your current profile; only the new values are shown.'] };
-  }
-  if (!current.me.roles.includes('RESEARCHER')) {
-    throw new BugSecureError(
-      'FORBIDDEN',
-      'Nothing was sent: only a researcher profile can be edited through a connected app, and this account is not a researcher.',
-    );
-  }
-  return {
-    context: changed.map((f) => {
-      const now = current.myProfile?.[f] ?? '';
-      return [`${LABELS[f]} now`, now === '' ? '(empty)' : now];
-    }),
-  };
-};
 
 export const updateMyProfile = defineTool({
   name: 'update_my_profile',
@@ -50,10 +20,9 @@ export const updateMyProfile = defineTool({
     'fields given; an empty string clears one; the country is an ISO 3166-1 alpha-2 code such as SN). ' +
     'Everyone on BugSecure sees them. Nothing else about the ' +
     'account can be changed here: the avatar, email, sign-in and payout details stay on the website. Only ' +
-    'call this when the user asked; they approve the old and new values first.',
+    'call this when the user asked; they approve the new values on BugSecure first, next to the current ones. ' +
+    'Researcher accounts only.',
   requiredScopes: ['profile:write'],
-  // Reading the profile shows the current values in the approval, and refuses non-researchers early.
-  optionalScopes: ['profile:read'],
   // Destructive: overwrites the previous values. Idempotent: the same values again change nothing.
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   input: z
@@ -87,34 +56,23 @@ export const updateMyProfile = defineTool({
       country: wrapped().nullable(),
     }),
   }),
-  approval: async (input, context) => {
+  payload: (input) => {
     const changed = (['bio', 'website', 'country'] as const).filter((f) => input[f] !== undefined);
-    const shown = await currentProfile(changed, context);
     return {
-      action: `change ${changed.map((f) => LABELS[f].toLowerCase()).join(', ')} on your public researcher profile`,
-      audience: 'PUBLIC: shown on your researcher profile to everyone on BugSecure.',
-      irreversible: false,
-      context: shown.context ?? [],
-      notes: [
-        ...(shown.notes ?? []),
-        ...(changed.some((f) => input[f] === '') ? ['An empty value clears that field.'] : []),
+      action: `change the ${changed.map((f) => LABELS[f]).join(', ')} on your public researcher profile`,
+      parts: [
+        mutation(UpdateMyProfileDocument, {
+          input: {
+            ...(input.bio === undefined ? {} : { bio: input.bio }),
+            ...(input.website === undefined ? {} : { website: input.website }),
+            ...(input.country === undefined ? {} : { country: input.country }),
+          },
+        }),
       ],
-      fields: changed.map((f) => [`${LABELS[f]} (new)`, input[f]]),
     };
   },
-  async handler(input, { graphql, signal, viewerId, logger, clientRequestId }) {
-    const { updateResearcherProfile: p } = await graphql.request(
-      UpdateMyProfileDocument,
-      {
-        input: {
-          ...(input.bio === undefined ? {} : { bio: input.bio }),
-          ...(input.website === undefined ? {} : { website: input.website }),
-          ...(input.country === undefined ? {} : { country: input.country }),
-        },
-        clientRequestId,
-      },
-      { signal },
-    );
+  async handler(_input, { approved, signal, viewerId, logger }) {
+    const { updateResearcherProfile: p } = await approved.part.send({ signal });
     logger.info('researcher profile updated');
     const src = `user:${viewerId ?? 'me'}`;
     return {

@@ -52,6 +52,14 @@ export interface AccessTokenProvider {
 
 export interface RequestOptions {
   readonly signal?: AbortSignal | undefined;
+  /**
+   * When the answer must have arrived (absolute, ms): the request's timeout is
+   * the client's, shortened to what is left before then. Running out is a
+   * timeout (`UPSTREAM_UNAVAILABLE`), as the client's own timeout is, never a
+   * cancellation: a write that times out this way is still resent once under
+   * its key when time allows (tools/shared/write-retry.ts).
+   */
+  readonly answerBy?: number | undefined;
 }
 
 export interface GraphQLClient {
@@ -83,6 +91,10 @@ const operationName = (query: string): string | undefined => {
   return /\b(?:query|mutation)\s+([_A-Za-z][_0-9A-Za-z]*)/.exec(query)?.[1];
 };
 
+/** One request's timeout: the client's, shortened to what is left before `answerBy` (never under 1 ms). */
+const timeoutFor = (timeoutMs: number, answerBy: number | undefined): number =>
+  answerBy === undefined ? timeoutMs : Math.max(1, Math.min(timeoutMs, answerBy - Date.now()));
+
 export const createGraphQLClient = (options: GraphQLClientOptions): GraphQLClient => {
   const fetchFn = options.fetch ?? globalThis.fetch;
   const logger = options.logger ?? silentLogger;
@@ -92,7 +104,7 @@ export const createGraphQLClient = (options: GraphQLClientOptions): GraphQLClien
     query: string,
     variables: unknown,
     token: string,
-    signal: AbortSignal | undefined,
+    requestOptions: RequestOptions,
   ): Promise<Response> => {
     try {
       return await fetchFn(options.url, {
@@ -103,11 +115,11 @@ export const createGraphQLClient = (options: GraphQLClientOptions): GraphQLClien
           authorization: `Bearer ${token}`,
         }),
         body: JSON.stringify({ query, variables, operationName: operationName(query) }),
-        signal: withTimeout(signal, options.timeoutMs),
+        signal: withTimeout(requestOptions.signal, timeoutFor(options.timeoutMs, requestOptions.answerBy)),
         redirect: 'error', // never replay a bearer token to another location
       });
     } catch (error) {
-      return mapNetworkError(error, signal, 'The BugSecure API');
+      return mapNetworkError(error, requestOptions.signal, 'The BugSecure API');
     }
   };
 
@@ -122,10 +134,10 @@ export const createGraphQLClient = (options: GraphQLClientOptions): GraphQLClien
     variables: unknown,
     token: string,
     op: string,
-    signal: AbortSignal | undefined,
+    requestOptions: RequestOptions,
   ): Promise<unknown> => {
     const started = performance.now();
-    const response = await send(query, variables, token, signal);
+    const response = await send(query, variables, token, requestOptions);
     if (response.status === 401) {
       await response.body?.cancel();
       logger.debug('graphql', { op, status: 401, ms: Math.round(performance.now() - started) });
@@ -136,7 +148,7 @@ export const createGraphQLClient = (options: GraphQLClientOptions): GraphQLClien
     try {
       text = await readTextCapped(response, maxBytes);
     } catch (error) {
-      return mapNetworkError(error, signal, 'The BugSecure API');
+      return mapNetworkError(error, requestOptions.signal, 'The BugSecure API');
     }
     logger.debug('graphql', { op, status: response.status, ms: Math.round(performance.now() - started) });
 
@@ -191,12 +203,12 @@ export const createGraphQLClient = (options: GraphQLClientOptions): GraphQLClien
       // token in its auth guard, before the resolver runs, so retrying one of
       // the single-operation documents the tools send does not repeat a write.
       let token = await options.tokens.getAccessToken(signal);
-      let data = await attempt(query, variables, token, op, signal);
+      let data = await attempt(query, variables, token, op, requestOptions);
       if (data === REJECTED) {
         options.tokens.invalidate(token);
         logger.info('access token rejected; retrying once with a fresh one', { op });
         token = await options.tokens.getAccessToken(signal);
-        data = await attempt(query, variables, token, op, signal);
+        data = await attempt(query, variables, token, op, requestOptions);
       }
       if (data === REJECTED) {
         options.tokens.invalidate(token);

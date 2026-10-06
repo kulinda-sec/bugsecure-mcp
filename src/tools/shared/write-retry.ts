@@ -28,6 +28,10 @@
  * made, and must be checked with a read tool before the user is asked to
  * approve it again (a new approval is a new key). A refusal of the resend
  * proves nothing about whether the first request committed.
+ *
+ * A write sent with `answerBy` (when the MCP call's answer is due) is resent
+ * only while at least `MIN_RESEND_MS` are left before then: a resend the client
+ * would never hear is not started, and the outcome is reported unknown at once.
  */
 import { BugSecureError } from '../../errors.js';
 import type { GraphQLClient, RequestOptions, TypedDocument } from '../../graphql/client.js';
@@ -36,6 +40,13 @@ import { CHECK_BEFORE_REAPPROVING } from './request-id.js';
 
 /** How long the resend waits before asking again, each time the API says the first request still runs. */
 export const IN_PROGRESS_DELAYS_MS: readonly number[] = [500, 1_500];
+
+/** The least time a resend (or another ask after IN_PROGRESS) needs before the answer is due. */
+export const MIN_RESEND_MS = 1_000;
+
+/** What is left before the answer is due; unbounded without `answerBy`. */
+const timeLeft = (answerBy: number | undefined): number =>
+  answerBy === undefined ? Number.POSITIVE_INFINITY : answerBy - Date.now();
 
 /** What to do when a write's outcome is unknown. */
 export const OUTCOME_UNKNOWN_HINT =
@@ -80,18 +91,23 @@ const wait = (ms: number, signal: AbortSignal | undefined): Promise<void> => {
   });
 };
 
-/** The failure a write ends in when neither its request nor the resend confirmed it. */
-const outcomeUnknown = (cause: unknown): BugSecureError => {
+/** The failure a write ends in when its request did not confirm it, and the resend did not either or could not be made. */
+const outcomeUnknown = (cause: unknown, resent: boolean): BugSecureError => {
   // BugSecureError messages are safe to show (upstream text is already fenced).
   // Raw errors may contain secrets. Keep the resend's hint out: advice to retry
   // or approve again is unsafe until the first request's outcome is checked.
-  const detail = cause instanceof BugSecureError ? `The resend failed: ${cause.message}\n\n` : '';
+  const detail =
+    cause instanceof BugSecureError
+      ? `The ${resent ? 'resend' : 'request'} failed: ${cause.message}\n\n`
+      : '';
+  const resend = resent
+    ? 'one resend with the same idempotency key got no confirmation either'
+    : 'this call had no time left to resend it with the same idempotency key';
   return new BugSecureError(
     'UPSTREAM_UNAVAILABLE',
     detail +
       'BugSecure did not confirm this change (the request was sent, then its answer was lost or was an ' +
-      'error on BugSecure’s side, and one resend with the same idempotency key got no confirmation either). ' +
-      'The first request may still have been made.',
+      `error on BugSecure’s side, and ${resend}). The first request may still have been made.`,
     { hint: OUTCOME_UNKNOWN_HINT, cause },
   );
 };
@@ -113,6 +129,10 @@ export const resendingLostWrites = (graphql: GraphQLClient, options: WriteRetryO
         return await graphql.request(document, variables, requestOptions);
       } catch (error) {
         if (!isLost(error) || signal?.aborted) throw error;
+        if (timeLeft(requestOptions.answerBy) < MIN_RESEND_MS) {
+          options.logger.info('write answer lost; no time left in this call for the resend');
+          throw outcomeUnknown(error, false);
+        }
         options.logger.info('write answer lost; resending once with the same idempotency key');
       }
       // The one resend. IN_PROGRESS means the API holds the key for a request still
@@ -126,13 +146,17 @@ export const resendingLostWrites = (graphql: GraphQLClient, options: WriteRetryO
           const code = error instanceof BugSecureError ? error.code : undefined;
           const inProgress = code === 'REQUEST_IN_PROGRESS';
           const delay = delays[attempt];
-          if (inProgress && delay !== undefined) {
+          if (
+            inProgress &&
+            delay !== undefined &&
+            timeLeft(requestOptions.answerBy) - delay >= MIN_RESEND_MS
+          ) {
             await wait(delay, signal);
             continue;
           }
           // A refusal may precede the key lookup, or come from reading a committed
           // result. Neither establishes that the first request did not commit.
-          throw outcomeUnknown(error);
+          throw outcomeUnknown(error, true);
         }
       }
     },

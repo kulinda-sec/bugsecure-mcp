@@ -61,29 +61,52 @@ Generally out of scope:
 
 ## Requirements
 
-Write tools need a **BugSecure API that stores idempotency keys on every write
-(September 2026)**: every mutation this server sends carries a
-`clientRequestId`. Against an older API those calls are refused before anything
-runs (the argument is unknown to it), the tool reports that the API does not
-accept idempotency keys yet, and nothing is written; read tools are unaffected.
+Write tools need a **BugSecure API with agent approvals (October 2026)**, which
+also stores idempotency keys on every write (September 2026). Before any write,
+this server registers the exact mutation(s) it is about to send
+(`createAgentApproval`, under the tool's own write scope), the user approves
+them on the BugSecure website, and the API runs a write from a connected app
+only against an approval that is the user's, for this OAuth client and grant,
+APPROVED, unexpired (15 minutes), not yet used, and whose stored arguments hash
+to the arguments actually sent; the approval is used up in the same
+transaction as the write, one part per mutation (marking several notifications
+read is one approval with several parts, each consumed by its own write).
+Deciding an approval is first-party only: no OAuth token, and so nothing this
+server or a model does, can approve one. Against an older API the approval
+operations are refused before anything runs (the fields are unknown to it),
+the tool reports that the API does not support agent approvals yet, and
+nothing is written; read tools are unaffected.
 
-How the key closes approval replay across hosted instances: an approval is
-single use per server instance, for ten minutes, and instances do not share
-that memory. But the approval's single-use nonce, sealed in the request state
-with the tool name and a digest of the exact arguments, is also the write's
-idempotency key. The API performs each write at most once per user, operation
-and key: the same key with the same arguments gets back what the first request
-wrote, as it stands now, instead of writing again; the same key with other
-arguments is refused (`IDEMPOTENCY_KEY_REUSED`), and a duplicate that arrives
-while the first is still running is refused (`IDEMPOTENCY_KEY_IN_PROGRESS`). A
-captured approved retry replayed to another instance therefore makes no second
-change. This relies on the API remembering keys for at least the ten minutes an
-approval is valid (it keeps them for 24 hours). A write that sends several
-mutations (marking several notifications read) derives one key per mutation
-from the nonce, so a replay sends each of them with the key of its first use.
-A replayed approval that reaches the same instance is refused before anything
-is sent, and the refusal says the change was already sent and which read tool
-to check, since asking the user to approve again would be a new key.
+What this server adds on its side, and why: the state it hands the MCP client
+between the round that asks and the round that waits for the decision is
+HMAC-sealed, bound to the authenticated principal (user and client), and
+carries the tool name, a digest of the arguments and of the exact payload, the
+approval's id and its key, for 15 minutes. A retry with other arguments, a
+payload that changed between the two rounds, or a state tampered with, forged,
+expired or minted for someone else never writes: it starts over, reusing a
+pending approval of the same payload when the API has one and creating a new
+one otherwise. The review page's address is shown to the client only when it
+is exactly this approval's page on the configured web origin
+(`BUGSECURE_WEB_URL`); otherwise, and for clients that cannot open a page, the
+model is told to send the user to BugSecure → Settings → Agent approvals, and
+no address passes through the model. The API re-checks everything regardless:
+the server's checks keep a user from being sent somewhere wrong or asked twice,
+they are not what stops an unapproved write.
+
+Idempotency closes the remaining gap. The approval's key is the write's
+idempotency key (`clientRequestId`; one key per part when there are several,
+derived deterministically). The API performs each write at most once per user,
+operation and key: the same key with the same arguments gets back what the
+first request wrote, as it stands now, instead of writing again; the same key
+with other arguments is refused (`IDEMPOTENCY_KEY_REUSED`), and a duplicate
+that arrives while the first is still running is refused
+(`IDEMPOTENCY_KEY_IN_PROGRESS`). The key is looked up before the approval, so a
+replay is answered from the stored result and never finds the approval
+missing. A call that reaches the approval after it was used (CONSUMED) is
+refused before anything is sent, and the refusal says the change was already
+sent and which read tool to check, since asking the user to approve again
+would be a new key. This relies on the API remembering keys for at least the
+15 minutes an approval is valid (it keeps them for 24 hours).
 
 A write whose answer is lost (a timeout, a dropped connection, a 5xx, or an
 internal error after the API may have committed) is resent **once**, with the

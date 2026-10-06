@@ -1,7 +1,9 @@
-# Small read-only lookups shared by the write tools: safety checks before a
-# write (who the caller is, whose report it is) and the names shown next to
-# ids in approval prompts. Each tool lists the scopes they need in
-# `optionalScopes` (or `requiredScopes` when the check is mandatory).
+# Small read-only lookups shared by the write tools: the safety checks a tool
+# makes before asking for, and before sending, a write (who the caller is,
+# whose report it is). Each tool lists the scopes they need in `requiredScopes`
+# (when the check is mandatory) or `optionalScopes` (when the tool can refuse
+# or proceed without it). What the ids refer to is shown to the user by the
+# BugSecure review page itself, so no lookup here exists for display alone.
 
 # The caller's roles (profile:read): platform staff are refused organisation-side writes.
 query GetViewerRoles {
@@ -11,74 +13,27 @@ query GetViewerRoles {
   }
 }
 
-# A report's title, status, programme and reporter (reports:read or triage:read).
+# A report's reporter (reports:read or triage:read): tells the caller's own
+# reports from their organisations'.
 query GetReportRef($id: ID!) {
   report(id: $id) {
     id
-    title
-    status
-    program {
-      id
-      title
-    }
     reporter {
       id
-      username
-    }
-    assignedTriage {
-      id
-      username
     }
   }
 }
 
-# A programme's title and organisation (programs:read).
-query GetProgramRef($id: ID!) {
-  program(id: $id) {
-    id
-    title
-    organization {
-      name
-    }
-  }
-}
-
-# The report and the grade in force an appeal would contest (reports:read).
+# A report's reporter and the grade in force on it (reports:read): an appeal is
+# raised only against the grade in force on one of the caller's own reports.
 query GetAppealTarget($reportId: ID!) {
   report(id: $reportId) {
     id
-    title
     reporter {
       id
     }
   }
   reportAdjudication(reportId: $reportId) {
     id
-    severity
-    amount
-    currency
-    side
-  }
-}
-
-# The caller's unread notifications, to name those a write would mark read (profile:read).
-query GetUnreadNotifications {
-  notifications(skip: 0, take: 50, unreadOnly: true) {
-    id
-    title
-  }
-  unreadNotificationCount
-}
-
-# The caller's roles and current public profile, shown before an edit (profile:read).
-query GetMyProfileRef {
-  me {
-    id
-    roles
-  }
-  myProfile {
-    bio
-    website
-    country
   }
 }
