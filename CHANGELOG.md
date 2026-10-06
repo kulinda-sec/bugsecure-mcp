@@ -10,6 +10,17 @@ are generated from the commit history by [cocogitto](https://docs.cocogitto.io)
 longer edited by hand.
 
 - - -
+## [v0.3.0](https://github.com/kulinda-sec/bugsecure-mcp/compare/01a31f0b5700cd96858e06998448920d6e168ef2..v0.3.0) - 2026-10-06
+#### Features
+- (**tools**) approve writes on the BugSecure review page (#11) - ([01a31f0](https://github.com/kulinda-sec/bugsecure-mcp/commit/01a31f0b5700cd96858e06998448920d6e168ef2)) - Baakey Dow
+#### Bug Fixes
+- keep a call's deadline past the deadline, and take the lock guard Windows refuses with EPERM (#13) - ([5062df8](https://github.com/kulinda-sec/bugsecure-mcp/commit/5062df8f84b0a20adc30c7c62e4d76b9fbf12d68)) - Baakey Dow
+#### Chores
+- (**deps**) bump the development group across 1 directory with 8 updates (#12) - ([29fc091](https://github.com/kulinda-sec/bugsecure-mcp/commit/29fc0915ee5a36ad79d97dfd8cc72db15f05b00c)) - dependabot[bot], dependabot[bot]
+- (**deps**) bump @modelcontextprotocol/server from 2.0.0 to 2.2.0 (#8) - ([b66fab2](https://github.com/kulinda-sec/bugsecure-mcp/commit/b66fab2db0dc9048b9483681f5ab4fcf66b477fc)) - dependabot[bot], dependabot[bot]
+
+- - -
+
 ## [v0.2.2](https://github.com/kulinda-sec/bugsecure-mcp/compare/fe6b22f0dde1955fbf6a4011c43bc006a49f9493..v0.2.2) - 2026-10-02
 #### Bug Fixes
 - (**tools**) the country is an ISO 3166-1 alpha-2 code, and the docs name the MCP Contributor badge (#7) - ([fe6b22f](https://github.com/kulinda-sec/bugsecure-mcp/commit/fe6b22f0dde1955fbf6a4011c43bc006a49f9493)) - Baakey Dow
