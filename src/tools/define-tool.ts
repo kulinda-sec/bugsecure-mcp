@@ -404,10 +404,20 @@ export interface ToolCall {
   readonly clientCapabilities?: ClientCapabilities | undefined;
 }
 
+/**
+ * How long a request's deadline stays remembered past the deadline itself. A
+ * re-entry after the client gave up must find the deadline it missed (and send
+ * nothing), not start a fresh clock because the memory had just lapsed; the
+ * memory is released when the request is answered, so this only bounds leaks.
+ */
+export const DEADLINE_MEMORY_GRACE_MS = 10 * 60_000;
+
 /** The deadline memory a call runs under (see RegisterToolsOptions). */
 export interface DeadlineMemory {
   readonly clientDeadlineMs?: number | undefined;
   readonly callDeadlines?: ExpiringLru<string, number> | undefined;
+  /** The clock (tests inject one; it must be the memory's own). */
+  readonly now?: (() => number) | undefined;
 }
 
 /** The SDK request a call belongs to: session and JSON-RPC id, the id's type kept (1 and "1" are distinct ids). */
@@ -429,12 +439,13 @@ const requestKey = (call: Pick<ToolCall, 'ctx'>): string | undefined => {
  */
 export const requestDeadline = (memory: DeadlineMemory, call: Pick<ToolCall, 'ctx'>): number => {
   const clientDeadlineMs = memory.clientDeadlineMs ?? CLIENT_REQUEST_DEADLINE_MS;
+  const now = memory.now ?? Date.now;
   const key = requestKey(call);
-  if (key === undefined || memory.callDeadlines === undefined) return Date.now() + clientDeadlineMs;
+  if (key === undefined || memory.callDeadlines === undefined) return now() + clientDeadlineMs;
   const known = memory.callDeadlines.get(key);
   if (known !== undefined) return known;
-  const deadlineAt = Date.now() + clientDeadlineMs;
-  memory.callDeadlines.set(key, deadlineAt, deadlineAt);
+  const deadlineAt = now() + clientDeadlineMs;
+  memory.callDeadlines.set(key, deadlineAt, deadlineAt + DEADLINE_MEMORY_GRACE_MS);
   return deadlineAt;
 };
 

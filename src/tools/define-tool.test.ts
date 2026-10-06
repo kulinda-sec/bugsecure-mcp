@@ -17,6 +17,7 @@ import {
   mutation,
   type Parts,
   partKey,
+  DEADLINE_MEMORY_GRACE_MS,
   type RegisterToolsOptions,
   releaseRequestDeadline,
   requestDeadline,
@@ -488,6 +489,24 @@ describe('the call deadline remembered per SDK request', () => {
     expect(memory.callDeadlines.size).toBe(2);
     memory.clientDeadlineMs = 1;
     expect(requestDeadline(memory, callFor(1))).toBeLessThan(first);
+  });
+
+  it('is still remembered after the deadline passed: a late re-entry gets the deadline it missed, not a new clock', () => {
+    let now = 1_000_000;
+    const clock = () => now;
+    const memory = {
+      clientDeadlineMs: 150,
+      callDeadlines: new ExpiringLru<string, number>(10, clock),
+      now: clock,
+    };
+    const first = requestDeadline(memory, callFor(7));
+    expect(first).toBe(1_000_150);
+    // The client gave up 200 ms ago (a slow review page on a legacy connection): same deadline, in the past.
+    now += 350;
+    expect(requestDeadline(memory, callFor(7))).toBe(first);
+    // Only a request never answered lets the memory lapse, and only well after the deadline.
+    now = first + DEADLINE_MEMORY_GRACE_MS + 1;
+    expect(requestDeadline(memory, callFor(7))).toBeGreaterThan(first);
   });
 
   it('starts its own clock without a request id or a memory', () => {
