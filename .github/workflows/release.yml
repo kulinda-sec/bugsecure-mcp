@@ -324,19 +324,33 @@ jobs:
 
       # The deployment circuit breaker can roll back on its own, after which
       # the service is "stable" on the OLD revision: check which one it runs.
+      # `services-stable` returns once the new task runs and the old one is
+      # gone, while ECS keeps the rolling deployment IN_PROGRESS until the old
+      # task set has drained (a minute or two more): wait for its verdict,
+      # COMPLETED or FAILED, rather than read it once. v0.3.0 was rolled back
+      # by a single read while its new task had been healthy for two minutes.
       - name: Wait for the rollout
         env:
           ARN: ${{ steps.taskdef.outputs.arn }}
         run: |
           set -euo pipefail
           aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
-          read -r CURRENT ROLLOUT < <(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
-            --query "services[0].[taskDefinition, deployments[?status=='PRIMARY'] | [0].rolloutState]" --output text)
-          if [ "$CURRENT" != "$ARN" ] || [ "$ROLLOUT" != COMPLETED ]; then
-            echo "::error::rollout did not complete: service is on ${CURRENT##*/} ($ROLLOUT)"
-            exit 1
-          fi
-          echo "Service is on ${CURRENT##*/}"
+          for attempt in $(seq 1 40); do
+            read -r CURRENT ROLLOUT < <(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+              --query "services[0].[taskDefinition, deployments[?status=='PRIMARY'] | [0].rolloutState]" --output text)
+            if [ "$CURRENT" != "$ARN" ] || [ "$ROLLOUT" = FAILED ]; then
+              echo "::error::rollout did not complete: service is on ${CURRENT##*/} ($ROLLOUT)"
+              exit 1
+            fi
+            if [ "$ROLLOUT" = COMPLETED ]; then
+              echo "Service is on ${CURRENT##*/}"
+              exit 0
+            fi
+            echo "rollout of ${ARN##*/} is $ROLLOUT ($attempt/40), waiting"
+            sleep 15
+          done
+          echo "::error::rollout of ${ARN##*/} is still $ROLLOUT after ten minutes"
+          exit 1
 
       - name: Smoke test
         run: |
