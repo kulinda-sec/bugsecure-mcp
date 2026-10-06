@@ -128,12 +128,32 @@ const statOf = async (path: string): Promise<BigIntStats | undefined> => {
 };
 
 /**
+ * Errors of taking or breaking a lock that can pass by themselves, so the waiter
+ * waits and looks again: the file vanished or appeared in between, or, on
+ * Windows, another process has it open. Anything else is thrown.
+ */
+const isTransient = (error: unknown): boolean => {
+  const code = errno(error);
+  if (code === 'ENOENT' || code === 'EEXIST' || code === 'EBUSY') return true;
+  return process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES');
+};
+
+/**
  * Shared by every acquisition, release and stale recovery. Never steal this
  * guard: a checked-then-removed guard can be replaced between the two calls.
  */
 const tryGuarded = async <T>(path: string, staleMs: number, fn: () => Promise<T>): Promise<T | undefined> => {
   const guard = `${path}.break`;
-  if (!(await tryAcquire(guard, `${String(process.pid)}:${randomToken(16)}`))) {
+  let acquired: boolean;
+  try {
+    acquired = await tryAcquire(guard, `${String(process.pid)}:${randomToken(16)}`);
+  } catch (error) {
+    // Windows answers EPERM, not EEXIST, for a guard another waiter is deleting at that
+    // instant (or still holds open): the guard is taken, so look again, as for EEXIST.
+    if (isTransient(error)) return undefined;
+    throw error;
+  }
+  if (!acquired) {
     const held = await statOf(guard);
     if (held !== undefined && Date.now() - Number(held.mtimeMs) > staleMs) {
       const owner = await readOwner(guard);
@@ -213,17 +233,6 @@ export const sweepStaleAside = async (path: string, staleMs: number, now = Date.
     const changed = Math.max(Number(info.mtimeMs), Number(info.ctimeMs));
     if (now - changed > staleMs) await rm(file, { force: true }).catch(() => undefined);
   }
-};
-
-/**
- * Errors of breaking a stale lock that can pass by themselves, so the waiter
- * waits and looks again: the file vanished or appeared in between, or, on
- * Windows, another process has it open. Anything else is thrown.
- */
-const isTransient = (error: unknown): boolean => {
-  const code = errno(error);
-  if (code === 'ENOENT' || code === 'EEXIST' || code === 'EBUSY') return true;
-  return process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES');
 };
 
 /**

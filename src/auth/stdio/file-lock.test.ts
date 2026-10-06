@@ -16,9 +16,16 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { open } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The lock's own `open` calls, observable so a test can make one fail the way Windows does.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, open: vi.fn(actual.open as typeof open) };
+});
 
 import { silentLogger } from '../../logger.js';
 
@@ -119,6 +126,32 @@ describe('withFileLock', () => {
     expect(done.sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     // Nothing left behind: no lock, no set-aside copies.
     expect(readdirSync(dirname(path))).toEqual([]);
+  });
+
+  it('treats a guard Windows refuses with EPERM (another waiter deleting it) as taken, and looks again', async () => {
+    const path = lockPath();
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      // The first open is the guard's: Windows answers EPERM for a file pending deletion.
+      vi.mocked(open).mockRejectedValueOnce(
+        Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }),
+      );
+      await expect(
+        withFileLock(path, () => Promise.resolve('ran'), { pollMs: 2, timeoutMs: 2_000 }),
+      ).resolves.toBe('ran');
+      expect(readdirSync(dirname(path))).toEqual([]);
+      // Elsewhere, EPERM is a real refusal and is thrown.
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      vi.mocked(open).mockRejectedValueOnce(
+        Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }),
+      );
+      await expect(
+        withFileLock(path, () => Promise.resolve('ran'), { pollMs: 2, timeoutMs: 2_000 }),
+      ).rejects.toThrow(/EPERM/);
+    } finally {
+      if (platform) Object.defineProperty(process, 'platform', platform);
+    }
   });
 
   it('deletes the stale lock it judged, and nothing else', async () => {
