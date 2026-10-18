@@ -152,7 +152,38 @@ describe('add_triage_comment', () => {
     expect(textOf(result)).toMatch(
       /^Nothing was sent: this connection can comment as a researcher and as an organisation/,
     );
+    expect(textOf(result)).toContain('Grant triage:read');
     expect(approvals.created).toEqual([]);
+    expect(withoutLookups(graphql.calls)).toEqual([]);
+  });
+
+  it('makes no lookup under the other side’s read scope, which shows none of the organisation’s reports', async () => {
+    // reports:read alone reads the user's own reports: the API answers every report of their
+    // organisations with a refusal, so a lookup under it could only refuse the note outright. The
+    // API checks whose report it is when the note is posted.
+    const { graphql } = api(() => posted(true));
+    harness = await connectTools({
+      graphql,
+      grantedScopes: [...TRIAGER, 'reports:read'],
+      viewerId: 'triager-1',
+    });
+    const result = await harness.call('add_triage_comment', { reportId: 'r1', content: 'hi' });
+    expect(result.isError).toBeFalsy();
+    expect(graphql.calls.map((c) => c.operation)).not.toContain('GetReportRef');
+  });
+
+  it('refuses, asking for triage:read, when it could post on either side and holds only reports:read', async () => {
+    const { graphql, approvals } = api(() => posted(true));
+    harness = await connectTools({
+      graphql,
+      grantedScopes: [...TRIAGER, 'reports:write', 'reports:read'],
+      viewerId: 'triager-1',
+    });
+    const result = await harness.call('add_triage_comment', { reportId: 'r1', content: 'hi' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('Grant triage:read');
+    expect(approvals.created).toEqual([]);
+    expect(graphql.calls.map((c) => c.operation)).not.toContain('GetReportRef');
     expect(withoutLookups(graphql.calls)).toEqual([]);
   });
 });

@@ -126,6 +126,31 @@ describe('add_report_comment', () => {
     harness = await connectTools({ graphql, grantedScopes: ['reports:write', 'triage:write'] });
     const result = await harness.call('add_report_comment', { reportId: 'r1', content: 'hi' });
     expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('Grant reports:read');
+    expect(approvals.created).toEqual([]);
+    expect(graphql.calls).toEqual([]);
+  });
+
+  it('makes no lookup under the other side’s read scope, which shows none of the user’s own reports', async () => {
+    // triage:read alone reads the user's organisations' reports: the API answers every report of
+    // their own with a refusal, so a lookup under it could only refuse the comment outright. The
+    // API checks whose report it is when the comment is posted.
+    const { graphql } = api();
+    harness = await connectTools({ graphql, grantedScopes: ['reports:write', 'triage:read'] });
+    const result = await harness.call('add_report_comment', { reportId: 'r1', content: 'hi' });
+    expect(result.isError).toBeFalsy();
+    expect(graphql.calls.map((c) => c.operation)).not.toContain('GetReportRef');
+  });
+
+  it('refuses, asking for reports:read, when it could post on either side and holds only triage:read', async () => {
+    const { graphql, approvals } = api();
+    harness = await connectTools({
+      graphql,
+      grantedScopes: ['reports:write', 'triage:write', 'triage:read'],
+    });
+    const result = await harness.call('add_report_comment', { reportId: 'r1', content: 'hi' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('Grant reports:read');
     expect(approvals.created).toEqual([]);
     expect(graphql.calls).toEqual([]);
   });
