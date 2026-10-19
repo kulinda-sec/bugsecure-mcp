@@ -10,6 +10,17 @@ are generated from the commit history by [cocogitto](https://docs.cocogitto.io)
 longer edited by hand.
 
 - - -
+## [v0.3.1](https://github.com/kulinda-sec/bugsecure-mcp/compare/fecf316047b26ffe016cb74d02b13ef6b8e45bab..v0.3.1) - 2026-10-18
+#### Bug Fixes
+- fail closed on report-side lookup errors (#20) - ([6bfb244](https://github.com/kulinda-sec/bugsecure-mcp/commit/6bfb244c2bc6698b7ab461f38b6629dea82d47d2)) - TORSOOEtehG, Bad Hack, baakeydow
+#### Chores
+- (**deps**) bump the development group across 1 directory with 8 updates (#23) - ([48df98f](https://github.com/kulinda-sec/bugsecure-mcp/commit/48df98f97a2ab20839a61546d0ed09c6fe9f9189)) - dependabot[bot], dependabot[bot]
+- (**deps**) bump the production group across 1 directory with 3 updates (#22) - ([9741dc5](https://github.com/kulinda-sec/bugsecure-mcp/commit/9741dc555af32877435c358a27b225d542861fc3)) - dependabot[bot], dependabot[bot]
+- (**docker**) bump node from `8ec5d75` to `173f125` (#19) - ([7c48c7a](https://github.com/kulinda-sec/bugsecure-mcp/commit/7c48c7a54a8db7646c9151529078ce7ccd1aeada)) - dependabot[bot], dependabot[bot]
+- (**docker**) bump distroless/nodejs24-debian13 from `bb6b03d` to `59c479c` (#15) - ([ead8b17](https://github.com/kulinda-sec/bugsecure-mcp/commit/ead8b17e076552999ce1273ac2a992dbd7ae84f7)) - dependabot[bot], dependabot[bot]
+
+- - -
+
 ## [v0.3.0](https://github.com/kulinda-sec/bugsecure-mcp/compare/01a31f0b5700cd96858e06998448920d6e168ef2..v0.3.0) - 2026-10-06
 #### Features
 - (**tools**) approve writes on the BugSecure review page (#11) - ([01a31f0](https://github.com/kulinda-sec/bugsecure-mcp/commit/01a31f0b5700cd96858e06998448920d6e168ef2)) - Baakey Dow
