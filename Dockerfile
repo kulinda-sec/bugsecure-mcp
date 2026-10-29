@@ -13,7 +13,7 @@
 #
 # Base images are pinned by digest; Dependabot keeps them current.
 
-FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS base
+FROM node:24.22.0-trixie-slim@sha256:a6155384446670e9719bdc4fd0ebe4d4b29fb32a8d6aa523da3547a6cfbcf22c AS base
 WORKDIR /app
 ENV CI=true
 # pnpm version comes from package.json#packageManager.
