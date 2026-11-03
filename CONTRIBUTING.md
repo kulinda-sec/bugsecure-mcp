@@ -375,8 +375,10 @@ type(scope): summary
 ```
 
 - **Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
-  `build`, `ci`, `chore`, `revert`. `feat` and `fix` drive the version and the
-  changelog; `test`, `build`, `ci` and `style` stay out of the changelog.
+  `build`, `ci`, `chore`, `revert`. `feat` bumps the minor version; `fix` and
+  `chore` bump the patch version (a dependency or base-image bump changes what
+  the package and the image ship); `test`, `build`, `ci` and `style` stay out
+  of the changelog.
 - **Scopes** (optional) name the area: `tools`, `auth`, `transports`,
   `graphql`, `cli`, `config`, `security`, `deps`, `release`.
 - **Breaking changes:** `!` after the type or scope (`feat(tools)!: rename
@@ -437,7 +439,8 @@ signing configured. It then runs `cog bump --auto`, which runs `pnpm run check`,
 sets `package.json#version`, prepends the generated section to `CHANGELOG.md`,
 commits `chore(version): vX.Y.Z` and creates the signed tag `vX.Y.Z`, and
 pushes the commit and the tag separately (`--follow-tags` skips tags that are
-not annotated, so it is not relied on).
+not annotated, so it is not relied on). When no commit since the last tag calls
+for a bump (only `ci`, `docs`, `test`… commits), it stops and pushes nothing.
 
 The tag starts the `Release` workflow:
 
