@@ -58,12 +58,18 @@ git fetch --quiet origin main
 [ "$(git config --type=bool --get tag.gpgSign || true)" = true ] || refuse "git config tag.gpgSign is not true"
 [ -n "$(git config --get user.signingkey || true)" ] || refuse "git config user.signingkey is not set"
 
+previous="$(node -p 'require("./package.json").version')"
+
 # pre_bump_hooks run `pnpm run check` and set package.json#version;
 # post_bump_hooks re-create the tag signed (cog.toml).
 cog bump --auto
 
 version="$(node -p 'require("./package.json").version')"
 tag="v$version"
+# cog exits 0 without bumping when no commit since the last tag calls for one
+# (cog.toml decides which types do); then there is nothing to push.
+[ "$version" != "$previous" ] \
+  || refuse "no commit since v$previous calls for a bump (see cog.toml [commit_types]); nothing was pushed"
 git cat-file tag "refs/tags/$tag" 2> /dev/null | grep -Eq -- '-----BEGIN (SSH|PGP) SIGNATURE-----' \
   || refuse "$tag is missing or unsigned after cog bump; fix it before pushing (nothing was pushed)"
 

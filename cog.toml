@@ -34,14 +34,16 @@ authors = [
 ]
 
 # Changelog sections per type; noise types are omitted from the changelog only
-# (bump still reads every type to pick the version).
+# (bump still reads every type to pick the version). By default only feat, fix
+# and breaking changes bump; chore bumps the patch version too, because a
+# dependency or base-image bump changes what the package and the image ship.
 [commit_types]
 feat = { changelog_title = "Features" }
 fix = { changelog_title = "Bug Fixes" }
 perf = { changelog_title = "Performance Improvements" }
 refactor = { changelog_title = "Code Refactoring" }
 docs = { changelog_title = "Documentation" }
-chore = { changelog_title = "Chores" }
+chore = { changelog_title = "Chores", bump_patch = true }
 revert = { changelog_title = "Reverts" }
 test = { omit_from_changelog = true }
 build = { omit_from_changelog = true }
