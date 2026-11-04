@@ -10,6 +10,18 @@ are generated from the commit history by [cocogitto](https://docs.cocogitto.io)
 longer edited by hand.
 
 - - -
+## [v0.3.2](https://github.com/kulinda-sec/bugsecure-mcp/compare/833b31c6237abea83bee4277bec6cfb139193176..v0.3.2) - 2026-11-04
+#### Chores
+- (**deps**) bump source-map-js from 1.2.1 to 1.2.2 (#33) - ([d2c0282](https://github.com/kulinda-sec/bugsecure-mcp/commit/d2c0282b56bd145522a7a3779bc172c47bf9a810)) - dependabot[bot], dependabot[bot]
+- (**deps**) bump vite from 8.3.0 to 8.3.5 (#32) - ([0d28c45](https://github.com/kulinda-sec/bugsecure-mcp/commit/0d28c45ca84948b24f517d587eabdaad2993a4bb)) - dependabot[bot], dependabot[bot]
+- (**deps**) bump the development group across 1 directory with 7 updates (#31) - ([1466cfe](https://github.com/kulinda-sec/bugsecure-mcp/commit/1466cfea7789f6c1a946a93d67c0623e1392f451)) - dependabot[bot], dependabot[bot]
+- (**deps**) bump the production group across 1 directory with 4 updates (#30) - ([3105911](https://github.com/kulinda-sec/bugsecure-mcp/commit/31059119e52e3bd29f76105bc2bca0f1e4372aa1)) - dependabot[bot], dependabot[bot], Baakey Dow
+- (**docker**) bump distroless/nodejs24-debian13 from `59c479c` to `b8cec4b` (#25) - ([b9ac73d](https://github.com/kulinda-sec/bugsecure-mcp/commit/b9ac73d648b2e5e4e5ff0e17760e8bc49508bf8d)) - dependabot[bot], dependabot[bot], Baakey Dow
+- (**docker**) bump node from 24.21.0-trixie-slim to 24.22.0-trixie-slim (#29) - ([4cf3819](https://github.com/kulinda-sec/bugsecure-mcp/commit/4cf38190c5eaa38df33d7ad48ffef780436d6cd5)) - dependabot[bot], dependabot[bot], Baakey Dow
+- (**release**) bump the patch version on chore commits (#34) - ([3a11379](https://github.com/kulinda-sec/bugsecure-mcp/commit/3a113798a42518234ab948a7dafc7c9559e3c3ad)) - Baakey Dow
+
+- - -
+
 ## [v0.3.1](https://github.com/kulinda-sec/bugsecure-mcp/compare/fecf316047b26ffe016cb74d02b13ef6b8e45bab..v0.3.1) - 2026-10-18
 #### Bug Fixes
 - fail closed on report-side lookup errors (#20) - ([6bfb244](https://github.com/kulinda-sec/bugsecure-mcp/commit/6bfb244c2bc6698b7ab461f38b6629dea82d47d2)) - TORSOOEtehG, Bad Hack, baakeydow
