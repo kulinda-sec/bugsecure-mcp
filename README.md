@@ -425,11 +425,16 @@ and platform administration), and a test keeps it that way.
   `<untrusted-content-NONCE source="…">` blocks whose random nonce changes with
   every response (so stored text cannot forge the closing tag), with the
   delimiter neutralised in the text: its plain spelling, and any spelling that
-  Unicode compatibility normalisation (NFKC) or dropping control characters
-  turns into it (characters that only resemble it, such as letters of another
-  script, are left to the nonce), invisible Unicode characters removed and
-  direction-changing ones made visible, and the server instructions tell the
-  model never to follow instructions inside them. Every string a tool returns is
+  comes down to it through Unicode compatibility normalisation, dropping
+  control characters and combining marks, or a listed set of confusables for
+  the delimiter's own characters (other angle brackets, slashes and dashes,
+  look-alike letters of other scripts, a zero for the `o`:
+  [`src/untrusted-confusables.ts`](src/untrusted-confusables.ts), drawn from
+  the Unicode confusables data). That list is not every possible look-alike;
+  what it misses is left to the nonce. Invisible Unicode characters are removed
+  and direction-changing ones made visible, and the server instructions tell
+  the model never to follow instructions inside the blocks. Every string a tool
+  returns is
   either fenced like this or strictly shaped (ids, enums, dates, and a fixed
   list of named formats such as CVSS vectors); error messages the API sends back
   are fenced too. A programme's or organisation's slug is fenced as well: it is

@@ -18,16 +18,28 @@
  *    existed cannot know it, so it cannot produce a matching closing tag.
  * 2. Anything in the text that looks like the delimiter anyway —
  *    `<untrusted-content…` / `</untrusted-content…` in any case, with any
- *    whitespace or slashes an HTML-ish parser might accept before the name —
- *    has its `<` replaced by `&lt;`. So does anything that Unicode
- *    compatibility normalisation (NFKC) turns into that: the fullwidth and
- *    small forms of `<`, `/` and `-`, fullwidth or mathematical letters, in any
- *    mix; and anything that becomes that once control characters (C0, DEL, C1)
- *    are dropped, wherever they sit, between `<` and the name or inside it. A
- *    reader that normalises the text or discards controls sees no delimiter
- *    either. Characters that merely resemble the delimiter's without being
- *    equivalent to them (letters of other scripts, other dashes) are not
- *    covered: the nonce is what stops those.
+ *    whitespace, slashes or backslashes an HTML-ish parser might accept before
+ *    the name — has its `<` replaced by `&lt;`. So does a spelling that comes
+ *    down to that once each character is reduced to the plain one it stands
+ *    for, in any mix of:
+ *    - compatibility forms, which Unicode normalisation (NFKC/NFKD) resolves:
+ *      the fullwidth and small forms of `<`, `/`, `\` and `-`, fullwidth or
+ *      mathematical letters;
+ *    - combining marks (accents, overlays), composed with the character or
+ *      following it, which are ignored;
+ *    - control characters (C0, DEL, C1), dropped wherever they sit, between
+ *      `<` and the name or inside it;
+ *    - a listed set of confusables for the delimiter's own characters (`<`,
+ *      `/`, `\`, `-` and the letters u n t r s e d c o): the look-alikes the
+ *      Unicode confusables data (UTS #39) records for them — other angle
+ *      brackets, slashes and dashes, letters of other scripts (Cyrillic,
+ *      Greek, Armenian, Cherokee, …), small capitals and IPA letters — and a
+ *      digit zero for the `o`. The list is untrusted-confusables.ts.
+ *    A reader that normalises the text, discards controls or goes by the shape
+ *    of those characters sees no delimiter either. This is that list, not
+ *    every look-alike: a character that resembles one of the delimiter's
+ *    without being listed (or a respelling such as `untrusted_content`) is
+ *    not recognised, and the nonce is what stops it.
  * 3. Invisible characters (Unicode `Default_Ignorable_Code_Point`: zero-width
  *    space/joiners, word joiner, soft hyphen, variation selectors, the "tag"
  *    block used for ASCII smuggling, …) are removed, so they can neither hide
@@ -45,6 +57,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 
+import { DELIMITER_CONFUSABLES } from './untrusted-confusables.js';
+
 export const UNTRUSTED_TAG = 'untrusted-content';
 
 /** 64-bit nonce, lowercase hex. */
@@ -53,13 +67,15 @@ const NONCE_PATTERN = `[0-9a-f]{${String(NONCE_BYTES * 2)}}`;
 const SOURCE_PATTERN = '[A-Za-z0-9:._/#@-]';
 const MAX_SOURCE_LENGTH = 120;
 
-// `<` + optional whitespace or slashes + tag name, any case. Matched against
-// folded text (`fold`), which is where the look-alikes of each character are
-// covered and control characters are dropped.
-const DELIMITER = /<(?=[\s/]*untrusted-content)/giu;
+// `<` + optional whitespace, slashes or backslashes + tag name, any case, its
+// `o` possibly a digit zero. Matched against folded text (`fold`), which is
+// where the look-alikes of each character are covered and control characters
+// are dropped.
+const DELIMITER = /<(?=[\s/\\]*untrusted-c[o0]ntent)/giu;
 // Anything but printable ASCII: text holding none of it is its own fold.
 const NEEDS_FOLD = /[^\u0020-\u007E]/u;
-const NOT_ASCII = /[^\p{ASCII}]/u;
+// Combining marks: accents and overlays, spacing or not.
+const MARK = /\p{M}/u;
 // C0 controls, DEL and the C1 block. Some readers discard them (tokenizer
 // normalisers do), and NEL and the like are not in `\s`.
 // eslint-disable-next-line no-control-regex
@@ -75,19 +91,57 @@ export const visibleEscape = (char: string): string => {
   return `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`;
 };
 
+/** What one code point of a decomposed character counts as: its plain look-alike, nothing for a combining mark. */
+const plain = (char: string): string => {
+  return DELIMITER_CONFUSABLES.get(char) ?? (MARK.test(char) ? '' : char);
+};
+
+/** The folded image of one code point that is not printable ASCII (see `fold`). */
+const foldCodePoint = (char: string): string => {
+  if (CONTROL.test(char)) return '';
+  const listed = DELIMITER_CONFUSABLES.get(char);
+  if (listed !== undefined) return listed;
+  const decomposed = char.normalize('NFKD');
+  if (decomposed === char) return MARK.test(char) ? '' : char;
+  let image = '';
+  for (const part of decomposed) image += plain(part);
+  return image;
+};
+
+// Folded images of the non-ASCII code points met so far: a text repeats the
+// same few, and normalising each occurrence is what costs. Emptied when full,
+// so that it stays small whatever is thrown at it.
+const FOLD_CACHE_SIZE = 4096;
+const foldCache = new Map<string, string>();
+
 /**
- * `text` with every code point replaced by its NFKC image and every control
- * character dropped, and for each UTF-16 unit of the result the index in
- * `text` of the code point it comes from. Folding one code point at a time
- * keeps that mapping exact; it differs from normalising the whole string only
- * where combining marks compose, which never produces an ASCII character.
+ * `text` with every code point replaced by the plain character(s) it stands
+ * for, and for each UTF-16 unit of the result the index in `text` of the code
+ * point it comes from. Per code point: a control character is dropped; a
+ * listed confusable (untrusted-confusables.ts) becomes its plain character;
+ * anything else is decomposed (NFKD), and each part is then a listed
+ * confusable, a combining mark (dropped) or kept. Folding one code point at a
+ * time keeps the mapping exact; it differs from decomposing the whole string
+ * only in the order of combining marks, which are dropped.
  */
 const fold = (text: string): { folded: string; origin: number[] } => {
   let folded = '';
   const origin: number[] = [];
   let index = 0;
   for (const char of text) {
-    const image = CONTROL.test(char) ? '' : NOT_ASCII.test(char) ? char.normalize('NFKC') : char;
+    let image: string;
+    if (!NEEDS_FOLD.test(char)) {
+      image = char;
+    } else {
+      const cached = foldCache.get(char);
+      if (cached === undefined) {
+        image = foldCodePoint(char);
+        if (foldCache.size >= FOLD_CACHE_SIZE) foldCache.clear();
+        foldCache.set(char, image);
+      } else {
+        image = cached;
+      }
+    }
     folded += image;
     while (origin.length < folded.length) origin.push(index);
     index += char.length;
@@ -95,22 +149,19 @@ const fold = (text: string): { folded: string; origin: number[] } => {
   return { folded, origin };
 };
 
-/** Replace the `<` of every delimiter, in any normalisation-equivalent spelling, by `&lt;`. */
+/** Replace the `<` of every delimiter, in any spelling `fold` reduces to it, by `&lt;`. */
 const neutraliseDelimiters = (text: string): string => {
   if (!NEEDS_FOLD.test(text)) return text.replace(DELIMITER, '&lt;');
   const { folded, origin } = fold(text);
   let out = '';
   let copied = 0;
   for (const match of folded.matchAll(DELIMITER)) {
-    // The code point of `text` that folds to this `<` (itself, U+FE64 or U+FF1C).
+    // The code point of `text` that folds to this `<`: itself or one of its
+    // look-alikes, which `&lt;` replaces whole.
     const at = origin[match.index];
     if (at === undefined || at < copied) continue;
-    const length = (text.codePointAt(at) ?? 0) > 0xffff ? 2 : 1;
-    out += `${text.slice(copied, at)}${text
-      .slice(at, at + length)
-      .normalize('NFKC')
-      .replace('<', '&lt;')}`;
-    copied = at + length;
+    out += `${text.slice(copied, at)}&lt;`;
+    copied = at + ((text.codePointAt(at) ?? 0) > 0xffff ? 2 : 1);
   }
   return out + text.slice(copied);
 };
