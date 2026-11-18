@@ -4,12 +4,12 @@ import type { BadgeState } from '../graphql/generated.js';
 import { ListBadgesDocument } from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
 import {
+  code,
   id,
+  ifShaped,
   pageOf,
   paginationInput,
   paginationOutput,
-  safeSlug,
-  slug,
   timestamp,
   wrapped,
 } from './shared/common.js';
@@ -33,7 +33,8 @@ export const listBadges = defineTool({
     badges: z.array(
       z.object({
         id: id(),
-        slug: slug(),
+        // Unfenced: badge slugs are fixed names from BugSecure's own catalogue (see PATTERNS).
+        slug: code('badge-slug').nullable(),
         name: wrapped(),
         description: wrapped(),
         state: z.enum(BADGE_STATES),
@@ -58,7 +59,7 @@ export const listBadges = defineTool({
       data: {
         badges: items.map((b) => ({
           id: b.id,
-          slug: safeSlug(b.slug),
+          slug: ifShaped('badge-slug', b.slug),
           name: untrusted(`badge:${b.id}:name`, b.name),
           description: untrusted(`badge:${b.id}:description`, b.description),
           state: b.state,

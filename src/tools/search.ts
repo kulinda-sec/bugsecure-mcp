@@ -2,16 +2,7 @@ import * as z from 'zod';
 
 import { SearchDocument } from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
-import {
-  code,
-  id,
-  paginationInput,
-  paginationOutput,
-  page,
-  safeSlug,
-  slug,
-  wrapped,
-} from './shared/common.js';
+import { code, fencedSlug, id, paginationInput, paginationOutput, page, wrapped } from './shared/common.js';
 import { defineTool } from './define-tool.js';
 
 const MAX_LIMIT = 50;
@@ -47,7 +38,7 @@ export const search = defineTool({
       z.object({
         type: z.enum(TYPES),
         id: id(),
-        slug: slug('Programme slug (programmes only).'),
+        slug: wrapped('Programme slug (programmes only).').nullable(),
         title: wrapped('For researchers: the username.'),
         status: code('machine-code').nullable(),
         highlight: wrapped('Excerpt; matches marked with <mark>.').nullable(),
@@ -75,7 +66,7 @@ export const search = defineTool({
         {
           type,
           id: r.id,
-          slug: safeSlug(r.slug),
+          slug: fencedSlug(`${src}:slug`, r.slug),
           title: untrusted(`${src}:title`, r.title),
           status: r.status,
           highlight: untrusted(`${src}:excerpt`, r.highlight),

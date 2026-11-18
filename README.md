@@ -432,7 +432,8 @@ and platform administration), and a test keeps it that way.
   model never to follow instructions inside them. Every string a tool returns is
   either fenced like this or strictly shaped (ids, enums, dates, and a fixed
   list of named formats such as CVSS vectors); error messages the API sends back
-  are fenced too. Very long report fields are cut (inside the fence, with a
+  are fenced too. A programme's or organisation's slug is fenced as well: it is
+  made of words its owner chose. Very long report fields are cut (inside the fence, with a
   marker) unless you ask for the full text, and comments and history come a page
   at a time. This
   reduces, but cannot eliminate, prompt-injection risk: keep write scopes off
