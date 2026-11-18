@@ -19,7 +19,7 @@
  */
 import * as z from 'zod';
 
-import { hasControlCharacters, isUntrustedBlock, untrusted } from '../../untrusted.js';
+import { hasControlCharacters, hiddenCharacter, isUntrustedBlock, untrusted } from '../../untrusted.js';
 
 /** A taxonomy node: a dotted snake_case path, e.g. `cross_site_scripting_xss.stored.non_privileged_user_to_anyone`. */
 const NODE = String.raw`[a-z0-9_]{1,100}(?:\.[a-z0-9_]{1,100}){0,9}`;
@@ -162,11 +162,37 @@ export const timestamp = (): z.ZodString => {
 };
 
 /**
- * Free text a user writes (reports, comments, appeals, grades): trimmed,
- * Windows line endings normalised, bounded, and refused when it carries a
- * control character (other than tab and line feed) or a Unicode line
- * separator — such characters have no business in a report, and can hide or
- * rearrange what the user is shown for approval.
+ * Refuse a character that hides or reorders text (`hiddenCharacter`), naming
+ * it so the model can remove it. A runtime refusal: nothing is published in
+ * the input schema.
+ */
+export const refuseHiddenCharacters = (value: string, context: z.RefinementCtx): void => {
+  const hidden = hiddenCharacter(value);
+  if (hidden === null) return;
+  context.addIssue({
+    code: 'custom',
+    message:
+      hidden.kind === 'direction-changing'
+        ? `must not contain direction-changing (bidirectional control) characters: remove ${hidden.escape}`
+        : `must not contain invisible characters: remove ${hidden.escape} ` +
+          '(a zero-width joiner or variation selector is accepted only inside an emoji or a script that needs it)',
+  });
+};
+
+/**
+ * Free text the model passes in (reports, comments, appeals, grades, search
+ * terms): trimmed, Windows line endings normalised, bounded, and refused when
+ * it carries
+ * - a control character other than tab and line feed, or a Unicode line or
+ *   paragraph separator (`hasControlCharacters`);
+ * - a bidirectional control, which reorders what is displayed;
+ * - an invisible character: the zero-width space, word joiner, BOM, soft
+ *   hyphen, fillers, the tag block and the rest of
+ *   `Default_Ignorable_Code_Point`. The zero-width joiner and non-joiner and
+ *   the emoji/text presentation selectors pass only where an emoji sequence or
+ *   a script that needs them puts them (`hiddenCharacter` has the exact rule).
+ * Such characters have no business in a report, and can hide or rearrange what
+ * the user is shown for approval, or what the recipient reads.
  */
 export const userText = (min: number, max: number, description: string): z.ZodString =>
   z
@@ -179,6 +205,7 @@ export const userText = (min: number, max: number, description: string): z.ZodSt
       (v) => !hasControlCharacters(v),
       'must not contain control characters (other than tab and new line)',
     )
+    .superRefine(refuseHiddenCharacters)
     .describe(description);
 
 /**

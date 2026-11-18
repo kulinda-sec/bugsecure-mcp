@@ -1,7 +1,7 @@
 import * as z from 'zod';
 
 import { ListInvitedProgramsDocument, SearchProgramsDocument } from '../graphql/generated.js';
-import { idInput, page, paginationInput, paginationOutput } from './shared/common.js';
+import { idInput, page, paginationInput, paginationOutput, userText } from './shared/common.js';
 import { defineTool } from './define-tool.js';
 import { ProgramSummarySchema, toProgramSummary } from './shared/program.js';
 
@@ -23,13 +23,7 @@ export const searchPrograms = defineTool({
         .boolean()
         .default(false)
         .describe('List the private programmes you were invited to (no other filter applies).'),
-      query: z
-        .string()
-        .trim()
-        .min(1)
-        .max(200)
-        .optional()
-        .describe('Free-text search over programme titles and descriptions.'),
+      query: userText(1, 200, 'Free-text search over programme titles and descriptions.').optional(),
       organizationId: idInput('Only programmes run by this organisation.').optional(),
       minReward: z
         .number()

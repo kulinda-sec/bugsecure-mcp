@@ -2,7 +2,16 @@ import * as z from 'zod';
 
 import { SearchDocument } from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
-import { code, fencedSlug, id, paginationInput, paginationOutput, page, wrapped } from './shared/common.js';
+import {
+  code,
+  fencedSlug,
+  id,
+  paginationInput,
+  paginationOutput,
+  page,
+  userText,
+  wrapped,
+} from './shared/common.js';
 import { defineTool } from './define-tool.js';
 
 const MAX_LIMIT = 50;
@@ -24,7 +33,7 @@ export const search = defineTool({
   requiredScopes: ['programs:read'],
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    query: z.string().trim().min(2).max(200).describe('Search terms (at least 2 characters).'),
+    query: userText(2, 200, 'Search terms (at least 2 characters).'),
     types: z
       .array(z.enum(TYPES))
       .min(1)

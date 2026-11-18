@@ -1,7 +1,7 @@
 import * as z from 'zod';
 
 import { CheckDuplicatesDocument } from '../graphql/generated.js';
-import { idInput } from './shared/common.js';
+import { idInput, userText } from './shared/common.js';
 import { ReportSummarySchema, toReportSummary } from './shared/report.js';
 import { defineTool } from './define-tool.js';
 
@@ -17,8 +17,8 @@ export const checkDuplicates = defineTool({
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   input: z.object({
     programId: idInput('Programme to search.'),
-    title: z.string().trim().min(1).max(300).describe('Title of the finding to check.'),
-    description: z.string().trim().min(1).max(50_000).describe('Description of the finding to check.'),
+    title: userText(1, 300, 'Title of the finding to check.'),
+    description: userText(1, 50_000, 'Description of the finding to check.'),
   }),
   output: z.object({ candidates: z.array(ReportSummarySchema) }),
   async handler(input, { graphql, signal }) {

@@ -198,3 +198,110 @@ export const hasControlCharacters = (text: string): boolean => {
   REVIEW_CONTROLS.lastIndex = 0;
   return REVIEW_CONTROLS.test(text);
 };
+
+// Everything `escapeUntrusted` removes or escapes on the way out: the
+// bidirectional controls and every `Default_Ignorable_Code_Point`. Built from
+// the same two expressions, so the two directions cannot drift apart.
+const CONCEALED = new RegExp(`${BIDI_CONTROLS.source}|${INVISIBLE.source}`, 'u');
+const BIDI_CONTROL = new RegExp(BIDI_CONTROLS.source, 'u');
+const ZERO_WIDTH_NON_JOINER = '\u200C';
+const ZERO_WIDTH_JOINER = '\u200D';
+const TEXT_PRESENTATION = '\uFE0E';
+const EMOJI_PRESENTATION = '\uFE0F';
+const KEYCAP = '\u20E3';
+const KEYCAP_BASE = /^[0-9#*]$/;
+const PICTOGRAPH = /\p{Extended_Pictographic}/u;
+const EMOJI_MODIFIER = /\p{Emoji_Modifier}/u;
+const LETTER_OR_MARK = /[\p{L}\p{M}]/u;
+// Scripts whose orthography uses the zero-width joiner or non-joiner, where
+// the character changes how its neighbours are drawn (so it is not hidden):
+// the Arabic family (Persian, Urdu, Kurdish…), the joining scripts of West
+// Africa, and the Indic and South-East Asian scripts that use it in clusters.
+const JOINER_SCRIPTS = [
+  'Arabic',
+  'Syriac',
+  'Mandaic',
+  'Nko',
+  'Adlam',
+  'Hanifi_Rohingya',
+  'Devanagari',
+  'Bengali',
+  'Gurmukhi',
+  'Gujarati',
+  'Oriya',
+  'Tamil',
+  'Telugu',
+  'Kannada',
+  'Malayalam',
+  'Sinhala',
+  'Khmer',
+  'Myanmar',
+];
+const JOINER_SCRIPT = new RegExp(`[${JOINER_SCRIPTS.map((script) => `\\p{scx=${script}}`).join('')}]`, 'u');
+
+/** A character `hiddenCharacter` refuses, and which of the two kinds it is. */
+export interface HiddenCharacter {
+  kind: 'direction-changing' | 'invisible';
+  /** Printable escape of the code point, e.g. `\u{202E}`. */
+  escape: string;
+}
+
+/**
+ * The first character of `text` that hides or reorders content, or `null`.
+ * Used to refuse input a person approves before it is sent: what they read
+ * must be what is written. (Control characters are `hasControlCharacters`.)
+ *
+ * Refused, wherever they sit:
+ * - every bidirectional control (U+061C, U+200E, U+200F, U+202A–U+202E,
+ *   U+2066–U+2069): they change the order text is displayed in (Trojan
+ *   Source). Right-to-left text needs none of them: the bidirectional
+ *   algorithm orders Arabic or N'Ko letters by itself;
+ * - every other `Default_Ignorable_Code_Point`, which renders as nothing: the
+ *   zero-width space, word joiner, BOM, soft hyphen, combining grapheme
+ *   joiner, Hangul and Khmer fillers, Mongolian vowel separator and free
+ *   variation selectors, invisible operators, deprecated format characters,
+ *   variation selectors 1–14 and 17–256, and the whole tag block
+ *   (U+E0000–U+E007F), which spells invisible ASCII. Tags are refused even in
+ *   a well-formed emoji tag sequence, so the subdivision flags (England,
+ *   Scotland, Wales) are refused: an exception would keep open a channel that
+ *   carries letters and digits, for three flags.
+ *
+ * Accepted, only where legitimate text needs them and never in a run (each
+ * must directly follow a visible character, so a sequence of them cannot
+ * encode hidden data, as zero-width or variation-selector steganography does):
+ * - the zero-width joiner and non-joiner (U+200D, U+200C) directly after a
+ *   letter or mark of a script that uses them (`JOINER_SCRIPTS`), where they
+ *   visibly change the shaping (Persian compounds, Indic conjuncts);
+ * - the zero-width joiner inside an emoji sequence: after a pictograph, a skin
+ *   tone modifier or the emoji presentation selector, and before a pictograph
+ *   (family, profession and flag sequences);
+ * - the presentation selectors (U+FE0E, U+FE0F) directly after a pictograph,
+ *   and U+FE0F between a keycap base (`0`–`9`, `#`, `*`) and U+20E3.
+ * Anywhere else (a joiner between Latin letters, a selector after a letter)
+ * they are invisible and refused.
+ */
+export const hiddenCharacter = (text: string): HiddenCharacter | null => {
+  if (!CONCEALED.test(text)) return null;
+  const chars = Array.from(text);
+  for (const [index, char] of chars.entries()) {
+    if (!CONCEALED.test(char)) continue;
+    if (BIDI_CONTROL.test(char)) return { kind: 'direction-changing', escape: visibleEscape(char) };
+    const previous = chars[index - 1] ?? '';
+    const next = chars[index + 1] ?? '';
+    const joiner = char === ZERO_WIDTH_JOINER || char === ZERO_WIDTH_NON_JOINER;
+    if (joiner && LETTER_OR_MARK.test(previous) && JOINER_SCRIPT.test(previous)) continue;
+    if (
+      char === ZERO_WIDTH_JOINER &&
+      // A selector reached here was accepted: it follows a pictograph.
+      (PICTOGRAPH.test(previous) || EMOJI_MODIFIER.test(previous) || previous === EMOJI_PRESENTATION) &&
+      PICTOGRAPH.test(next)
+    ) {
+      continue;
+    }
+    const selector = char === EMOJI_PRESENTATION || char === TEXT_PRESENTATION;
+    if (selector && PICTOGRAPH.test(previous)) continue;
+    if (char === EMOJI_PRESENTATION && KEYCAP_BASE.test(previous) && next === KEYCAP) continue;
+    return { kind: 'invisible', escape: visibleEscape(char) };
+  }
+  return null;
+};

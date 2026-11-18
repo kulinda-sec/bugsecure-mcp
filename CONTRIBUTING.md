@@ -342,9 +342,11 @@ time and is never edited by hand.
   `registry.test.ts`). Describe a field only when its name does not say it;
   never repeat what the tool description or the fencing note already says.
 - **Validate input tightly.** Bounded strings and numbers, ids with `idInput()`,
-  free text a user writes with `userText()` (normalises line endings, refuses
-  control characters), `.describe()` on every field (it is the model's only
-  documentation).
+  every free-text argument, searches included, with `userText()` (normalises
+  line endings; refuses control characters, bidirectional controls and
+  invisible characters, see `hiddenCharacter` in `src/untrusted.ts`), any
+  other string with an anchored pattern, `.describe()` on every field (it is
+  the model's only documentation).
 - **Never log content.** Log metadata only (ids, counts, codes). The logger
   redacts sensitive-looking keys, but do not rely on it.
 - **Throw `BugSecureError` for expected failures** (not found, invalid state) with

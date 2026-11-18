@@ -438,6 +438,20 @@ and platform administration), and a test keeps it that way.
   at a time. This
   reduces, but cannot eliminate, prompt-injection risk: keep write scopes off
   unless you need them, and read the review page before approving.
+- **No hidden text in what the assistant writes.** Free text a tool takes
+  (reports, comments, grades, appeals, disclosure drafts, the profile bio and
+  website, search terms) is refused, before anything is registered or sent,
+  when it contains a control character other than tab and new line, a
+  direction-changing character (the Unicode bidirectional controls) or an
+  invisible one: the zero-width space, word joiner, byte order mark, soft
+  hyphen, filler characters, the "tag" characters that spell invisible ASCII,
+  and the other default-ignorable code points. The zero-width joiner and
+  non-joiner and the emoji/text presentation selectors are accepted only where
+  text needs them: inside an emoji sequence, or after a letter of a script that
+  uses them (Arabic and Persian, N'Ko, Adlam, the Indic scripts…). The flags of
+  England, Scotland and Wales, which are built from tag characters, are
+  refused. The review page reveals concealed characters too; this is the same
+  rule, applied earlier.
 - **Hardened HTTP surface.** Host and Origin allowlists (DNS rebinding), no CORS
   wildcard on the MCP endpoint, POST only, credentials checked from the headers
   before any request body is read, request body limits, per-request deadlines,

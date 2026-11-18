@@ -42,6 +42,15 @@ describe('check_duplicates', () => {
       (await harness.call('check_duplicates', { programId: 'p1', title: '', description: 'x' })).isError,
     ).toBe(true);
     expect((await harness.call('check_duplicates', { title: 't', description: 'd' })).isError).toBe(true);
+    // Hidden, reordering and control characters are refused, as in what write tools send.
+    for (const bad of ['a\u202Eb', 'a\u200Bb', `a${String.fromCodePoint(0xe0041)}`, 'a\u001Bb']) {
+      for (const args of [
+        { programId: 'p1', title: bad, description: 'd' },
+        { programId: 'p1', title: 't', description: bad },
+      ]) {
+        expect((await harness.call('check_duplicates', args)).isError, JSON.stringify(args)).toBe(true);
+      }
+    }
     expect(graphql.calls).toHaveLength(0);
   });
 
