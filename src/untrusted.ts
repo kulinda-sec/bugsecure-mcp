@@ -18,8 +18,16 @@
  *    existed cannot know it, so it cannot produce a matching closing tag.
  * 2. Anything in the text that looks like the delimiter anyway —
  *    `<untrusted-content…` / `</untrusted-content…` in any case, with any
- *    whitespace or slashes an HTML-ish parser might accept, including the
- *    fullwidth and small `<` look-alikes — has its `<` replaced by `&lt;`.
+ *    whitespace or slashes an HTML-ish parser might accept before the name —
+ *    has its `<` replaced by `&lt;`. So does anything that Unicode
+ *    compatibility normalisation (NFKC) turns into that: the fullwidth and
+ *    small forms of `<`, `/` and `-`, fullwidth or mathematical letters, in any
+ *    mix; and anything that becomes that once control characters (C0, DEL, C1)
+ *    are dropped, wherever they sit, between `<` and the name or inside it. A
+ *    reader that normalises the text or discards controls sees no delimiter
+ *    either. Characters that merely resemble the delimiter's without being
+ *    equivalent to them (letters of other scripts, other dashes) are not
+ *    covered: the nonce is what stops those.
  * 3. Invisible characters (Unicode `Default_Ignorable_Code_Point`: zero-width
  *    space/joiners, word joiner, soft hyphen, variation selectors, the "tag"
  *    block used for ASCII smuggling, …) are removed, so they can neither hide
@@ -45,8 +53,17 @@ const NONCE_PATTERN = `[0-9a-f]{${String(NONCE_BYTES * 2)}}`;
 const SOURCE_PATTERN = '[A-Za-z0-9:._/#@-]';
 const MAX_SOURCE_LENGTH = 120;
 
-// `<` (or a look-alike: U+FE64 small, U+FF1C fullwidth) + optional whitespace/slashes + tag name, any case.
-const DELIMITER = /[<\uFE64\uFF1C](?=[\s/]*untrusted-content)/giu;
+// `<` + optional whitespace or slashes + tag name, any case. Matched against
+// folded text (`fold`), which is where the look-alikes of each character are
+// covered and control characters are dropped.
+const DELIMITER = /<(?=[\s/]*untrusted-content)/giu;
+// Anything but printable ASCII: text holding none of it is its own fold.
+const NEEDS_FOLD = /[^\u0020-\u007E]/u;
+const NOT_ASCII = /[^\p{ASCII}]/u;
+// C0 controls, DEL and the C1 block. Some readers discard them (tokenizer
+// normalisers do), and NEL and the like are not in `\s`.
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001F\u007F-\u009F]/u;
 // Bidirectional controls: ALM, LRM, RLM, LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI.
 const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
 // Every other invisible code point (includes the U+E0000 tag block and variation selectors).
@@ -58,10 +75,50 @@ export const visibleEscape = (char: string): string => {
   return `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`;
 };
 
+/**
+ * `text` with every code point replaced by its NFKC image and every control
+ * character dropped, and for each UTF-16 unit of the result the index in
+ * `text` of the code point it comes from. Folding one code point at a time
+ * keeps that mapping exact; it differs from normalising the whole string only
+ * where combining marks compose, which never produces an ASCII character.
+ */
+const fold = (text: string): { folded: string; origin: number[] } => {
+  let folded = '';
+  const origin: number[] = [];
+  let index = 0;
+  for (const char of text) {
+    const image = CONTROL.test(char) ? '' : NOT_ASCII.test(char) ? char.normalize('NFKC') : char;
+    folded += image;
+    while (origin.length < folded.length) origin.push(index);
+    index += char.length;
+  }
+  return { folded, origin };
+};
+
+/** Replace the `<` of every delimiter, in any normalisation-equivalent spelling, by `&lt;`. */
+const neutraliseDelimiters = (text: string): string => {
+  if (!NEEDS_FOLD.test(text)) return text.replace(DELIMITER, '&lt;');
+  const { folded, origin } = fold(text);
+  let out = '';
+  let copied = 0;
+  for (const match of folded.matchAll(DELIMITER)) {
+    // The code point of `text` that folds to this `<` (itself, U+FE64 or U+FF1C).
+    const at = origin[match.index];
+    if (at === undefined || at < copied) continue;
+    const length = (text.codePointAt(at) ?? 0) > 0xffff ? 2 : 1;
+    out += `${text.slice(copied, at)}${text
+      .slice(at, at + length)
+      .normalize('NFKC')
+      .replace('<', '&lt;')}`;
+    copied = at + length;
+  }
+  return out + text.slice(copied);
+};
+
 /** Neutralise text so it can sit safely inside an untrusted-content block. */
 export const escapeUntrusted = (text: string): string => {
   // Order matters: invisible characters go first, so they cannot split a delimiter.
-  return text.replace(BIDI_CONTROLS, visibleEscape).replace(INVISIBLE, '').replace(DELIMITER, '&lt;');
+  return neutraliseDelimiters(text.replace(BIDI_CONTROLS, visibleEscape).replace(INVISIBLE, ''));
 };
 
 /** Sanitise a `source` label (e.g. `report:abc123:body`). */
@@ -115,12 +172,13 @@ const BLOCK = new RegExp(
   `^<${UNTRUSTED_TAG}-(${NONCE_PATTERN}) source="${SOURCE_PATTERN}{1,${String(MAX_SOURCE_LENGTH)}}">\\n[\\s\\S]*\\n</${UNTRUSTED_TAG}-\\1>$`,
   'u',
 );
-const ANY_DELIMITER = new RegExp(`</?${UNTRUSTED_TAG}`, 'giu');
 
 /** `true` when `value` is exactly one block produced by `untrusted()`. */
 export const isUntrustedBlock = (value: string): boolean => {
   // Exactly one opening and one closing delimiter: the ones `untrusted()` wrote.
-  return BLOCK.test(value) && (value.match(ANY_DELIMITER) ?? []).length === 2;
+  // Counted the way `escapeUntrusted` looks for them, so a look-alike that
+  // slipped into the text fails the check.
+  return BLOCK.test(value) && (fold(value).folded.match(DELIMITER) ?? []).length === 2;
 };
 
 // C0 controls except tab and line feed (so CR, backspace, ESC…), DEL, the C1

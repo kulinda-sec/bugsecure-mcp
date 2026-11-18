@@ -422,8 +422,11 @@ and platform administration), and a test keeps it that way.
     the saved sign-in) and connecting again.
 - **Third-party content is data.** Text written by other people is wrapped in
   `<untrusted-content-NONCE source="…">` blocks whose random nonce changes with
-  every response (so stored text cannot forge the closing tag), with look-alike
-  delimiters neutralised, invisible Unicode characters removed and
+  every response (so stored text cannot forge the closing tag), with the
+  delimiter neutralised in the text: its plain spelling, and any spelling that
+  Unicode compatibility normalisation (NFKC) or dropping control characters
+  turns into it (characters that only resemble it, such as letters of another
+  script, are left to the nonce), invisible Unicode characters removed and
   direction-changing ones made visible, and the server instructions tell the
   model never to follow instructions inside them. Every string a tool returns is
   either fenced like this or strictly shaped (ids, enums, dates, and a fixed
