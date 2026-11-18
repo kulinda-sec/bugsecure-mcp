@@ -5,10 +5,15 @@ import { fakeAuthorizationServer } from '../../test/helpers/fake-authorization-s
 import { fakeAgentApprovals, type FakeAgentApprovals, lookups } from '../../test/helpers/fake-graphql.js';
 import { type ElicitationPrompt, elicitingClient, type OpenAnswer } from '../../test/helpers/tool-harness.js';
 import { TEST_ISSUER, TEST_RESOURCE, testSigner, type TestSigner } from '../../test/helpers/jwt.js';
-import { createAccessTokenVerifier } from '../auth/hosted/jwt.js';
+import {
+  type AccessTokenVerifier,
+  createAccessTokenVerifier,
+  InvalidTokenError,
+  KeySetUnavailableError,
+} from '../auth/hosted/jwt.js';
 import { TokenExchanger } from '../auth/hosted/token-exchange.js';
 import { type HostedConfig, loadHostedConfig } from '../config.js';
-import { silentLogger } from '../logger.js';
+import { createLogger, silentLogger } from '../logger.js';
 import { ALL_TOOLS } from '../tools/index.js';
 import { bearerToken, calledToolNames, createHttpApp, type HttpApp } from './http-app.js';
 
@@ -195,6 +200,87 @@ describe('authentication', () => {
     const res = await post(current.app, rpc('tools/list'), { authorization: `Bearer ${token}` });
     expect(res.status).toBe(401);
     expect(res.headers.get('www-authenticate')).toContain('error="invalid_token"');
+  });
+
+  describe('when verification throws', () => {
+    /** An app whose verifier always throws `error`; `lines` are its log lines. */
+    const appThrowing = (error: Error): { app: HttpApp; lines: string[] } => {
+      const config = hostedConfig();
+      const lines: string[] = [];
+      const logger = createLogger({
+        level: 'debug',
+        write: (line) => {
+          lines.push(line);
+        },
+      });
+      const verifyAccessToken: AccessTokenVerifier = () => Promise.reject(error);
+      const app = createHttpApp({
+        config,
+        logger,
+        verifyAccessToken,
+        exchanger: new TokenExchanger({
+          tokenEndpoint: `${TEST_ISSUER}/oauth/token`,
+          clientId: config.clientId,
+          clientSecret: config.clientSecret,
+          apiResource: config.apiUrl,
+          cacheSize: 10,
+          logger,
+          fetch: () => Promise.reject(new Error('the authorization server must not be called')),
+        }),
+        fetch: () => Promise.reject(new Error('the API must not be called')),
+      });
+      return { app, lines };
+    };
+    const send = (app: HttpApp): Promise<Response> => {
+      return post(app, rpc('tools/list'), {
+        authorization: 'Bearer secret-token-value',
+        host: 'mcp.test',
+        origin: 'https://app.example',
+      });
+    };
+
+    it('answers 503 with retry-after and no challenge when the signing keys are unavailable', async () => {
+      const cause = Object.assign(new Error('Expected 200 OK from https://as.test/jwks?secret=1'), {
+        code: 'ERR_JOSE_GENERIC',
+      });
+      const { app, lines } = appThrowing(new KeySetUnavailableError(cause));
+      const res = await send(app);
+      expect(res.status).toBe(503);
+      expect(res.headers.get('retry-after')).toBe('5');
+      expect(res.headers.get('www-authenticate')).toBeNull();
+      expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example');
+      expect(await res.json()).toEqual({ error: 'temporarily_unavailable' });
+      await app.close();
+
+      const logged = lines.join('');
+      expect(logged).toContain('"level":"warn"');
+      expect(logged).toContain('"name":"KeySetUnavailableError"');
+      expect(logged).toContain('"code":"ERR_JOSE_GENERIC"');
+      expect(logged).not.toContain('secret');
+      expect(logged).not.toContain('Expected 200');
+    });
+
+    it('answers 503 for any other failure too, logged as an error', async () => {
+      const { app, lines } = appThrowing(new TypeError('boom secret-detail'));
+      const res = await send(app);
+      expect(res.status).toBe(503);
+      expect(res.headers.get('retry-after')).toBe('5');
+      expect(res.headers.get('www-authenticate')).toBeNull();
+      expect(await res.json()).toEqual({ error: 'temporarily_unavailable' });
+      await app.close();
+      expect(lines.join('')).toContain('"level":"error"');
+      expect(lines.join('')).not.toContain('secret');
+    });
+
+    it('still answers 401 invalid_token for an InvalidTokenError', async () => {
+      const { app } = appThrowing(new InvalidTokenError('token failed validation'));
+      const res = await send(app);
+      expect(res.status).toBe(401);
+      expect(res.headers.get('www-authenticate')).toContain('error="invalid_token"');
+      expect(res.headers.get('retry-after')).toBeNull();
+      expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example');
+      await app.close();
+    });
   });
 
   it('401s with invalid_request for a malformed Authorization header', async () => {

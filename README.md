@@ -406,7 +406,8 @@ and platform administration), and a test keeps it that way.
     metadata, answers `401` with `WWW-Authenticate: Bearer resource_metadata="…"`,
     and `403 insufficient_scope` for step-up. Inbound JWTs are verified locally
     (RS256 only, `typ: at+jwt`, issuer, **audience = this server**, expiry,
-    maximum age). It never forwards your token: it exchanges it (RFC 8693) for a
+    maximum age); when the signing keys cannot be fetched it answers `503`
+    with `Retry-After`, not `invalid_token`, so clients keep their tokens. It never forwards your token: it exchanges it (RFC 8693) for a
     short-lived API token with the same or fewer scopes; one the API rejects is
     re-exchanged once, and a token the authorization server refuses to
     exchange is answered with `401 invalid_token` so your client refreshes it.
