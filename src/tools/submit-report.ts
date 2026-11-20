@@ -2,7 +2,7 @@ import * as z from 'zod';
 
 import { SubmitReportDocument } from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
-import { id, idInput, safeSlug, slug, timestamp, userText, wrapped } from './shared/common.js';
+import { fencedSlug, id, idInput, timestamp, userText, wrapped } from './shared/common.js';
 import { ReportStatusSchema, SeveritySchema } from './shared/report.js';
 import { defineTool, mutation } from './define-tool.js';
 
@@ -52,7 +52,7 @@ export const submitReport = defineTool({
       claimedSeverity: SeveritySchema,
       claimedCvssScore: z.number().nullable(),
       createdAt: timestamp(),
-      program: z.object({ id: id(), slug: slug(), title: wrapped() }).nullable(),
+      program: z.object({ id: id(), slug: wrapped().nullable(), title: wrapped() }).nullable(),
     }),
   }),
   payload: (input) => ({
@@ -88,7 +88,7 @@ export const submitReport = defineTool({
           createdAt: r.createdAt,
           program: r.program && {
             id: r.program.id,
-            slug: safeSlug(r.program.slug),
+            slug: fencedSlug(`program:${r.program.id}:slug`, r.program.slug),
             title: untrusted(`program:${r.program.id}:title`, r.program.title),
           },
         },

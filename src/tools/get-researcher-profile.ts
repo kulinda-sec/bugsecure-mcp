@@ -3,7 +3,7 @@ import * as z from 'zod';
 import { BugSecureError } from '../errors.js';
 import { GetResearcherProfileDocument } from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
-import { id, timestamp, wrapped } from './shared/common.js';
+import { id, timestamp, userText, wrapped } from './shared/common.js';
 import { defineTool } from './define-tool.js';
 
 export const getResearcherProfile = defineTool({
@@ -15,12 +15,7 @@ export const getResearcherProfile = defineTool({
   requiredScopes: ['programs:read'],
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    username: z
-      .string()
-      .trim()
-      .min(3)
-      .max(30)
-      .describe('BugSecure username (3–30 characters), e.g. from get_leaderboard.'),
+    username: userText(3, 30, 'BugSecure username (3–30 characters), e.g. from get_leaderboard.'),
   }),
   output: z.object({
     profile: z.object({

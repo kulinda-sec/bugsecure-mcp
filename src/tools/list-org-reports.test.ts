@@ -62,6 +62,12 @@ describe('list_org_reports', () => {
 
     expect((await harness.call('list_org_reports', { status: 'OPEN' })).isError).toBe(true);
     expect((await harness.call('list_org_reports', { query: '' })).isError).toBe(true);
+    // Hidden and reordering characters are refused here as in what write tools send.
+    for (const bad of ['xss\u202Ebio', 'xss\u200Bbio', 'xss\u{E0041}bio']) {
+      expect((await harness.call('list_org_reports', { query: bad })).isError, JSON.stringify(bad)).toBe(
+        true,
+      );
+    }
     expect(graphql.calls).toHaveLength(0);
   });
 

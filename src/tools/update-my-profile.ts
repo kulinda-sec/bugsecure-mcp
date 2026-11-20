@@ -2,7 +2,7 @@ import * as z from 'zod';
 
 import { UpdateMyProfileDocument } from '../graphql/generated.js';
 import { hasControlCharacters, untrusted } from '../untrusted.js';
-import { userText, wrapped } from './shared/common.js';
+import { refuseHiddenCharacters, userText, wrapped } from './shared/common.js';
 import { defineTool, mutation } from './define-tool.js';
 
 type Field = 'bio' | 'website' | 'country';
@@ -33,6 +33,7 @@ export const updateMyProfile = defineTool({
         .trim()
         .max(255)
         .refine((v) => v === '' || (WEBSITE.test(v) && !hasControlCharacters(v)), 'not an http(s) URL')
+        .superRefine(refuseHiddenCharacters)
         .optional()
         .describe('Public website, http(s) URL.'),
       country: z
