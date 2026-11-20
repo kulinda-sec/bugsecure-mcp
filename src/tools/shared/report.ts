@@ -22,7 +22,7 @@ import type {
   SeverityLevel,
 } from '../../graphql/generated.js';
 import { untrusted, untrustedJson } from '../../untrusted.js';
-import { code, id, ifShaped, safeSlug, slug, timestamp, wrapped } from './common.js';
+import { code, fencedSlug, id, ifShaped, timestamp, wrapped } from './common.js';
 
 export const REPORT_STATUSES = [
   'NEW',
@@ -81,7 +81,7 @@ const ReportCoreSchema = z.object({
   claimedSeverity: SeveritySchema.describe('Not the grade.'),
   createdAt: timestamp(),
   updatedAt: timestamp(),
-  program: z.object({ id: id(), slug: slug(), title: wrapped() }).nullable(),
+  program: z.object({ id: id(), slug: wrapped().nullable(), title: wrapped() }).nullable(),
   reporter: UserRefSchema,
   triageDueAt: timestamp().nullable().describe('Grading deadline.'),
   awaitingGrade: z.boolean().describe('Ungraded and not ruled out.'),
@@ -158,7 +158,7 @@ const toReportCore = (r: ReportCoreFragment): z.input<typeof ReportCoreSchema> =
     updatedAt: r.updatedAt,
     program: r.program && {
       id: r.program.id,
-      slug: safeSlug(r.program.slug),
+      slug: fencedSlug(`program:${r.program.id}:slug`, r.program.slug),
       title: untrusted(`program:${r.program.id}:title`, r.program.title),
     },
     reporter: {

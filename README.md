@@ -406,7 +406,8 @@ and platform administration), and a test keeps it that way.
     metadata, answers `401` with `WWW-Authenticate: Bearer resource_metadata="…"`,
     and `403 insufficient_scope` for step-up. Inbound JWTs are verified locally
     (RS256 only, `typ: at+jwt`, issuer, **audience = this server**, expiry,
-    maximum age). It never forwards your token: it exchanges it (RFC 8693) for a
+    maximum age); when the signing keys cannot be fetched it answers `503`
+    with `Retry-After`, not `invalid_token`, so clients keep their tokens. It never forwards your token: it exchanges it (RFC 8693) for a
     short-lived API token with the same or fewer scopes; one the API rejects is
     re-exchanged once, and a token the authorization server refuses to
     exchange is answered with `401 invalid_token` so your client refreshes it.
@@ -422,17 +423,40 @@ and platform administration), and a test keeps it that way.
     the saved sign-in) and connecting again.
 - **Third-party content is data.** Text written by other people is wrapped in
   `<untrusted-content-NONCE source="…">` blocks whose random nonce changes with
-  every response (so stored text cannot forge the closing tag), with look-alike
-  delimiters neutralised, invisible Unicode characters removed and
-  direction-changing ones made visible, and the server instructions tell the
-  model never to follow instructions inside them. Every string a tool returns is
+  every response (so stored text cannot forge the closing tag), with the
+  delimiter neutralised in the text: its plain spelling, and any spelling that
+  comes down to it through Unicode compatibility normalisation, dropping
+  control characters and combining marks, or a listed set of confusables for
+  the delimiter's own characters (other angle brackets, slashes and dashes,
+  look-alike letters of other scripts, a zero for the `o`:
+  [`src/untrusted-confusables.ts`](src/untrusted-confusables.ts), drawn from
+  the Unicode confusables data). That list is not every possible look-alike;
+  what it misses is left to the nonce. Invisible Unicode characters are removed
+  and direction-changing ones made visible, and the server instructions tell
+  the model never to follow instructions inside the blocks. Every string a tool
+  returns is
   either fenced like this or strictly shaped (ids, enums, dates, and a fixed
   list of named formats such as CVSS vectors); error messages the API sends back
-  are fenced too. Very long report fields are cut (inside the fence, with a
+  are fenced too. A programme's or organisation's slug is fenced as well: it is
+  made of words its owner chose. Very long report fields are cut (inside the fence, with a
   marker) unless you ask for the full text, and comments and history come a page
   at a time. This
   reduces, but cannot eliminate, prompt-injection risk: keep write scopes off
   unless you need them, and read the review page before approving.
+- **No hidden text in what the assistant writes.** Free text a tool takes
+  (reports, comments, grades, appeals, disclosure drafts, the profile bio and
+  website, search terms) is refused, before anything is registered or sent,
+  when it contains a control character other than tab and new line, a
+  direction-changing character (the Unicode bidirectional controls) or an
+  invisible one: the zero-width space, word joiner, byte order mark, soft
+  hyphen, filler characters, the "tag" characters that spell invisible ASCII,
+  and the other default-ignorable code points. The zero-width joiner and
+  non-joiner and the emoji/text presentation selectors are accepted only where
+  text needs them: inside an emoji sequence, or after a letter of a script that
+  uses them (Arabic and Persian, N'Ko, Adlam, the Indic scripts…). The flags of
+  England, Scotland and Wales, which are built from tag characters, are
+  refused. The review page reveals concealed characters too; this is the same
+  rule, applied earlier.
 - **Hardened HTTP surface.** Host and Origin allowlists (DNS rebinding), no CORS
   wildcard on the MCP endpoint, POST only, credentials checked from the headers
   before any request body is read, request body limits, per-request deadlines,

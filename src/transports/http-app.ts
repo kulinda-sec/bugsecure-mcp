@@ -35,7 +35,12 @@ import { ApprovalGate, CLIENT_REQUEST_DEADLINE_MS, pollBudgetFor } from '../tool
 import { type AnyTool, isWriteTool } from '../tools/define-tool.js';
 import { ALL_TOOLS } from '../tools/index.js';
 import { buildServer } from '../server.js';
-import { type AccessTokenVerifier, InvalidTokenError, type VerifiedAccessToken } from '../auth/hosted/jwt.js';
+import {
+  type AccessTokenVerifier,
+  InvalidTokenError,
+  KeySetUnavailableError,
+  type VerifiedAccessToken,
+} from '../auth/hosted/jwt.js';
 import {
   buildProtectedResourceMetadata,
   protectedResourceMetadataUrl,
@@ -383,7 +388,11 @@ export const createHttpApp = (options: HttpAppOptions): HttpApp => {
         logger.info('rejected access token', { why: error.message });
         return unauthorized(request, 'invalid_token', error.message);
       }
-      logger.error('token verification failed', { error });
+      // Not the token's fault (the signing keys could not be fetched, or something unexpected
+      // broke): 503 without a challenge, so the client keeps its token and retries. Nothing
+      // about the failure goes to the client; the log carries the error's name and code only.
+      if (error instanceof KeySetUnavailableError) logger.warn('signing keys unavailable', { error });
+      else logger.error('token verification failed', { error });
       return json(503, { error: 'temporarily_unavailable' }, { 'retry-after': '5', ...corsHeaders(request) });
     }
 

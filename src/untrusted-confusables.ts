@@ -1,0 +1,457 @@
+/**
+ * Characters that are drawn like one of the characters of the untrusted-content
+ * delimiter (`<`, `/`, `\`, `-` and the letters of `untrusted-content`)
+ * without being equivalent to it under Unicode normalisation, each with the
+ * plain character(s) it is read as. `fold` in untrusted.ts applies it, one
+ * code point at a time, so that a delimiter spelled with them is found.
+ *
+ * It is a list, not a similarity test: a character that is not here (and that
+ * decomposition and the removal of combining marks do not reduce to a plain
+ * one) is not recognised. What is here:
+ *
+ * - every single code point that the Unicode confusables data (UTS #39,
+ *   confusables.txt of Unicode 18.0.0) gives one of those characters as
+ *   prototype, alone or under combining marks, in either case, digit zero
+ *   counting as `o`;
+ * - the classes of that data whose prototype has the shape without being
+ *   ASCII: the long dashes (em dash, horizontal bar, box drawing), the angle
+ *   brackets, PRECEDES, and the small capitals N, R, T, D, E;
+ * - a few characters that data does not relate to them: the angle brackets
+ *   U+2770 and U+29FC, the hyphens and dashes U+058A, U+05BE, U+1806, U+2E3A,
+ *   U+2E3B and U+23AF, the double and triple solidus, and the two `co` letters.
+ *
+ * Left out on purpose: what NFKD already decomposes to one of these (fullwidth
+ * and mathematical forms, U+2329, accented letters), double shapes (guillemets,
+ * U+226A), and letters that resemble only in some typefaces (Greek nu, the
+ * Cyrillic italics). Matching one of these never changes a text unless the
+ * whole delimiter is spelled, so the list errs on the wide side.
+ *
+ * Written as escapes: half of these cannot be told from ASCII in an editor.
+ * Derived from Unicode data files, © Unicode, Inc., used under the Unicode
+ * License v3 (https://www.unicode.org/license.txt).
+ */
+const LOOK_ALIKES: Readonly<Record<string, string>> = {
+  // `<`
+  '\u02C2': '<', // MODIFIER LETTER LEFT ARROWHEAD
+  '\u1438': '<', // CANADIAN SYLLABICS PA
+  '\u16B2': '<', // RUNIC LETTER KAUNA
+  '\u2039': '<', // SINGLE LEFT-POINTING ANGLE QUOTATION MARK
+  '\u227A': '<', // PRECEDES
+  '\u276C': '<', // MEDIUM LEFT-POINTING ANGLE BRACKET ORNAMENT
+  '\u276E': '<', // HEAVY LEFT-POINTING ANGLE QUOTATION MARK ORNAMENT
+  '\u2770': '<', // HEAVY LEFT-POINTING ANGLE BRACKET ORNAMENT
+  '\u27E8': '<', // MATHEMATICAL LEFT ANGLE BRACKET
+  '\u29FC': '<', // LEFT-POINTING CURVED ANGLE BRACKET
+  '\u2D66': '<', // TIFINAGH LETTER YE
+  '\u3008': '<', // LEFT ANGLE BRACKET
+  '\u304F': '<', // HIRAGANA LETTER KU
+  '\u3111': '<', // BOPOMOFO LETTER Q
+  '\u31DB': '<', // CJK STROKE PD
+  '\u{1032D}': '<', // OLD ITALIC LETTER YE
+  '\u{16AEC}': '<', // BASSA VAH LETTER E
+  '\u{1D236}': '<', // GREEK INSTRUMENTAL NOTATION SYMBOL-40
+  '\u{21FE8}': '<', // CJK UNIFIED IDEOGRAPH-21FE8
+  // `/`
+  '\u1735': '/', // PHILIPPINE SINGLE PUNCTUATION
+  '\u2041': '/', // CARET INSERTION POINT
+  '\u2044': '/', // FRACTION SLASH
+  '\u2215': '/', // DIVISION SLASH
+  '\u2571': '/', // BOX DRAWINGS LIGHT DIAGONAL UPPER RIGHT TO LOWER LEFT
+  '\u27CB': '/', // MATHEMATICAL RISING DIAGONAL
+  '\u29F6': '/', // SOLIDUS WITH OVERBAR
+  '\u29F8': '/', // BIG SOLIDUS
+  '\u2AFB': '/', // TRIPLE SOLIDUS BINARY RELATION
+  '\u2AFD': '/', // DOUBLE SOLIDUS OPERATOR
+  '\u2CC6': '/', // COPTIC CAPITAL LETTER OLD COPTIC ESH
+  '\u2CC7': '/', // COPTIC SMALL LETTER OLD COPTIC ESH
+  '\u3033': '/', // VERTICAL KANA REPEAT MARK UPPER HALF
+  '\u30CE': '/', // KATAKANA LETTER NO
+  '\u31D2': '/', // CJK STROKE P
+  '\u31D3': '/', // CJK STROKE SP
+  '\u4E3F': '/', // CJK UNIFIED IDEOGRAPH-4E3F
+  '\u{1D23A}': '/', // GREEK INSTRUMENTAL NOTATION SYMBOL-47
+  // backslash
+  '\u2216': '\\', // SET MINUS
+  '\u2572': '\\', // BOX DRAWINGS LIGHT DIAGONAL UPPER LEFT TO LOWER RIGHT
+  '\u27CD': '\\', // MATHEMATICAL FALLING DIAGONAL
+  '\u29F5': '\\', // REVERSE SOLIDUS OPERATOR
+  '\u29F9': '\\', // BIG REVERSE SOLIDUS
+  '\u31D4': '\\', // CJK STROKE D
+  '\u4E36': '\\', // CJK UNIFIED IDEOGRAPH-4E36
+  '\u{1D20F}': '\\', // GREEK VOCAL NOTATION SYMBOL-16
+  '\u{1D23B}': '\\', // GREEK INSTRUMENTAL NOTATION SYMBOL-48
+  // `-`
+  '\u02D7': '-', // MODIFIER LETTER MINUS SIGN
+  '\u058A': '-', // ARMENIAN HYPHEN
+  '\u05BE': '-', // HEBREW PUNCTUATION MAQAF
+  '\u06D4': '-', // ARABIC FULL STOP
+  '\u1173': '-', // HANGUL JUNGSEONG EU
+  '\u174D': '-', // BUHID LETTER RA
+  '\u1806': '-', // MONGOLIAN TODO SOFT HYPHEN
+  '\u1BC7': '-', // BATAK LETTER PA
+  '\u1BF3': '-', // BATAK PANONGONAN
+  '\u2010': '-', // HYPHEN
+  '\u2012': '-', // FIGURE DASH
+  '\u2013': '-', // EN DASH
+  '\u2014': '-', // EM DASH
+  '\u2015': '-', // HORIZONTAL BAR
+  '\u2043': '-', // HYPHEN BULLET
+  '\u2212': '-', // MINUS SIGN
+  '\u2238': '-', // DOT MINUS
+  '\u23AF': '-', // HORIZONTAL LINE EXTENSION
+  '\u2500': '-', // BOX DRAWINGS LIGHT HORIZONTAL
+  '\u2501': '-', // BOX DRAWINGS HEAVY HORIZONTAL
+  '\u2796': '-', // HEAVY MINUS SIGN
+  '\u2A29': '-', // MINUS SIGN WITH COMMA ABOVE
+  '\u2A2A': '-', // MINUS SIGN WITH DOT BELOW
+  '\u2CB2': '-', // COPTIC CAPITAL LETTER DIALECT-P ALEF
+  '\u2CB3': '-', // COPTIC SMALL LETTER DIALECT-P ALEF
+  '\u2CBA': '-', // COPTIC CAPITAL LETTER DIALECT-P NI
+  '\u2CBB': '-', // COPTIC SMALL LETTER DIALECT-P NI
+  '\u2E1A': '-', // HYPHEN WITH DIAERESIS
+  '\u2E3A': '-', // TWO-EM DASH
+  '\u2E3B': '-', // THREE-EM DASH
+  '\u30FC': '-', // KATAKANA-HIRAGANA PROLONGED SOUND MARK
+  '\u31D0': '-', // CJK STROKE H
+  '\u4E00': '-', // CJK UNIFIED IDEOGRAPH-4E00
+  '\uA7F7': '-', // LATIN EPIGRAPHIC LETTER SIDEWAYS I
+  '\uAA7D': '-', // MYANMAR SIGN TAI LAING TONE-5
+  '\uFB29': '-', // HEBREW LETTER ALTERNATIVE PLUS SIGN
+  '\u{10191}': '-', // ROMAN UNCIA SIGN
+  '\u{1104B}': '-', // BRAHMI PUNCTUATION LINE
+  // `u`
+  '\u0244': 'u', // LATIN CAPITAL LETTER U BAR
+  '\u028B': 'u', // LATIN SMALL LETTER V WITH HOOK
+  '\u03C5': 'u', // GREEK SMALL LETTER UPSILON
+  '\u045F': 'u', // CYRILLIC SMALL LETTER DZHE
+  '\u054D': 'u', // ARMENIAN CAPITAL LETTER SEH
+  '\u057D': 'u', // ARMENIAN SMALL LETTER SEH
+  '\u1200': 'u', // ETHIOPIC SYLLABLE HA
+  '\u13CC': 'u', // CHEROKEE LETTER SA
+  '\u144C': 'u', // CANADIAN SYLLABICS TE
+  '\u1D1C': 'u', // LATIN LETTER SMALL CAPITAL U
+  '\u1D7E': 'u', // LATIN SMALL CAPITAL LETTER U WITH STROKE
+  '\u222A': 'u', // UNION
+  '\u22C3': 'u', // N-ARY UNION
+  '\uA4F4': 'u', // LISU LETTER U
+  '\uA79F': 'u', // LATIN SMALL LETTER VOLAPUK UE
+  '\uAB4E': 'u', // LATIN SMALL LETTER U WITH SHORT RIGHT LEG
+  '\uAB52': 'u', // LATIN SMALL LETTER U WITH LEFT HOOK
+  '\uAB9C': 'u', // CHEROKEE SMALL LETTER SA
+  '\u{104CE}': 'u', // OSAGE CAPITAL LETTER U
+  '\u{104F6}': 'u', // OSAGE SMALL LETTER U
+  '\u{118B8}': 'u', // WARANG CITI CAPITAL LETTER PU
+  '\u{118D8}': 'u', // WARANG CITI SMALL LETTER PU
+  '\u{16F42}': 'u', // MIAO LETTER WA
+  '\u{1DF39}': 'u', // LATIN SMALL LETTER V WITH HOOK AND PALATAL HOOK
+  // `n`
+  '\u014B': 'n', // LATIN SMALL LETTER ENG
+  '\u019D': 'n', // LATIN CAPITAL LETTER N WITH LEFT HOOK
+  '\u019E': 'n', // LATIN SMALL LETTER N WITH LONG RIGHT LEG
+  '\u0272': 'n', // LATIN SMALL LETTER N WITH LEFT HOOK
+  '\u0273': 'n', // LATIN SMALL LETTER N WITH RETROFLEX HOOK
+  '\u0274': 'n', // LATIN LETTER SMALL CAPITAL N
+  '\u039D': 'n', // GREEK CAPITAL LETTER NU
+  '\u03B7': 'n', // GREEK SMALL LETTER ETA
+  '\u0572': 'n', // ARMENIAN SMALL LETTER GHAD
+  '\u0578': 'n', // ARMENIAN SMALL LETTER VO
+  '\u057C': 'n', // ARMENIAN SMALL LETTER RA
+  '\u1D70': 'n', // LATIN SMALL LETTER N WITH MIDDLE TILDE
+  '\u2C9A': 'n', // COPTIC CAPITAL LETTER NI
+  '\u2C9B': 'n', // COPTIC SMALL LETTER NI
+  '\uA4E0': 'n', // LISU LETTER NA
+  '\u{1018E}': 'n', // NOMISMA SIGN
+  '\u{10513}': 'n', // ELBASAN LETTER NE
+  '\u{11ABE}': 'n', // CANADIAN SYLLABICS SPO
+  '\u{1DF4D}': 'n', // LATIN CAPITAL LETTER BARRED N
+  '\u{1DF4E}': 'n', // LATIN SMALL LETTER BARRED N
+  '\u{1DF4F}': 'n', // LATIN SMALL LETTER BARRED ENG
+  // `t`
+  '\u0166': 't', // LATIN CAPITAL LETTER T WITH STROKE
+  '\u0167': 't', // LATIN SMALL LETTER T WITH STROKE
+  '\u01AB': 't', // LATIN SMALL LETTER T WITH PALATAL HOOK
+  '\u01AD': 't', // LATIN SMALL LETTER T WITH HOOK
+  '\u01AE': 't', // LATIN CAPITAL LETTER T WITH RETROFLEX HOOK
+  '\u023E': 't', // LATIN CAPITAL LETTER T WITH DIAGONAL STROKE
+  '\u03A4': 't', // GREEK CAPITAL LETTER TAU
+  '\u03C4': 't', // GREEK SMALL LETTER TAU
+  '\u0422': 't', // CYRILLIC CAPITAL LETTER TE
+  '\u0442': 't', // CYRILLIC SMALL LETTER TE
+  '\u04AC': 't', // CYRILLIC CAPITAL LETTER TE WITH DESCENDER
+  '\u07E0': 't', // NKO LETTER NA WOLOSO
+  '\u13A2': 't', // CHEROKEE LETTER I
+  '\u13BF': 't', // CHEROKEE LETTER HNA
+  '\u1D1B': 't', // LATIN LETTER SMALL CAPITAL T
+  '\u1D75': 't', // LATIN SMALL LETTER T WITH MIDDLE TILDE
+  '\u20AE': 't', // TUGRIK SIGN
+  '\u22A4': 't', // DOWN TACK
+  '\u2361': 't', // APL FUNCTIONAL SYMBOL UP TACK DIAERESIS
+  '\u27D9': 't', // LARGE DOWN TACK
+  '\u2CA6': 't', // COPTIC CAPITAL LETTER TAU
+  '\u2CA7': 't', // COPTIC SMALL LETTER TAU
+  '\u3112': 't', // BOPOMOFO LETTER X
+  '\u4E05': 't', // CJK UNIFIED IDEOGRAPH-4E05
+  '\uA4D4': 't', // LISU LETTER TA
+  '\uA50B': 't', // VAI SYLLABLE GBEE
+  '\uA68C': 't', // CYRILLIC CAPITAL LETTER TWE
+  '\uA68D': 't', // CYRILLIC SMALL LETTER TWE
+  '\uAB72': 't', // CHEROKEE SMALL LETTER I
+  '\u{10297}': 't', // LYCIAN LETTER T
+  '\u{102B1}': 't', // CARIAN LETTER C-18
+  '\u{10315}': 't', // OLD ITALIC LETTER TE
+  '\u{118BC}': 't', // WARANG CITI CAPITAL LETTER HAR
+  '\u{16F0A}': 't', // MIAO LETTER TA
+  '\u{1D373}': 't', // IDEOGRAPHIC TALLY MARK TWO
+  '\u{1F768}': 't', // ALCHEMICAL SYMBOL FOR CRUCIBLE-4
+  // `r`
+  '\u01A6': 'r', // LATIN LETTER YR
+  '\u024C': 'r', // LATIN CAPITAL LETTER R WITH STROKE
+  '\u024D': 'r', // LATIN SMALL LETTER R WITH STROKE
+  '\u027C': 'r', // LATIN SMALL LETTER R WITH LONG LEG
+  '\u027D': 'r', // LATIN SMALL LETTER R WITH TAIL
+  '\u0280': 'r', // LATIN LETTER SMALL CAPITAL R
+  '\u0433': 'r', // CYRILLIC SMALL LETTER GHE
+  '\u0493': 'r', // CYRILLIC SMALL LETTER GHE WITH STROKE
+  '\u13A1': 'r', // CHEROKEE LETTER E
+  '\u13D2': 'r', // CHEROKEE LETTER SV
+  '\u1587': 'r', // CANADIAN SYLLABICS TLHI
+  '\u1D26': 'r', // GREEK LETTER SMALL CAPITAL GAMMA
+  '\u1D72': 'r', // LATIN SMALL LETTER R WITH MIDDLE TILDE
+  '\u2C85': 'r', // COPTIC SMALL LETTER GAMMA
+  '\uA4E3': 'r', // LISU LETTER ZHA
+  '\uAB47': 'r', // LATIN SMALL LETTER R WITHOUT HANDLE
+  '\uAB48': 'r', // LATIN SMALL LETTER DOUBLE R
+  '\uAB71': 'r', // CHEROKEE SMALL LETTER E
+  '\uAB81': 'r', // CHEROKEE SMALL LETTER HU
+  '\uABA2': 'r', // CHEROKEE SMALL LETTER SV
+  '\u{104B4}': 'r', // OSAGE CAPITAL LETTER BRA
+  '\u{16A19}': 'r', // BAMUM LETTER PHASE-F NU
+  '\u{16F35}': 'r', // MIAO LETTER ZHA
+  '\u{1D216}': 'r', // GREEK VOCAL NOTATION SYMBOL-23
+  '\u{1DF37}': 'r', // LATIN SMALL LETTER R WITH TAIL AND PALATAL HOOK
+  // `s`
+  '\u01BD': 's', // LATIN SMALL LETTER TONE FIVE
+  '\u0282': 's', // LATIN SMALL LETTER S WITH HOOK
+  '\u0405': 's', // CYRILLIC CAPITAL LETTER DZE
+  '\u0455': 's', // CYRILLIC SMALL LETTER DZE
+  '\u054F': 's', // ARMENIAN CAPITAL LETTER TIWN
+  '\u0D1F': 's', // MALAYALAM LETTER TTA
+  '\u10BD': 's', // GEORGIAN CAPITAL LETTER CHAR
+  '\u10FD': 's', // GEORGIAN LETTER AEN
+  '\u13D5': 's', // CHEROKEE LETTER DE
+  '\u13DA': 's', // CHEROKEE LETTER DU
+  '\u1CBD': 's', // GEORGIAN MTAVRULI CAPITAL LETTER AEN
+  '\u1D74': 's', // LATIN SMALL LETTER S WITH MIDDLE TILDE
+  '\uA4E2': 's', // LISU LETTER SA
+  '\uA576': 's', // VAI SYLLABLE POO
+  '\uA731': 's', // LATIN LETTER SMALL CAPITAL S
+  '\uA7C5': 's', // LATIN CAPITAL LETTER S WITH HOOK
+  '\uABAA': 's', // CHEROKEE SMALL LETTER DU
+  '\u{10296}': 's', // LYCIAN LETTER S
+  '\u{10420}': 's', // DESERET CAPITAL LETTER ZHEE
+  '\u{10448}': 's', // DESERET SMALL LETTER ZHEE
+  '\u{118C1}': 's', // WARANG CITI SMALL LETTER A
+  '\u{16AD6}': 's', // BASSA VAH LETTER GAH
+  '\u{16F3A}': 's', // MIAO LETTER SA
+  // `e`
+  '\u0246': 'e', // LATIN CAPITAL LETTER E WITH STROKE
+  '\u0247': 'e', // LATIN SMALL LETTER E WITH STROKE
+  '\u0395': 'e', // GREEK CAPITAL LETTER EPSILON
+  '\u0415': 'e', // CYRILLIC CAPITAL LETTER IE
+  '\u0435': 'e', // CYRILLIC SMALL LETTER IE
+  '\u04BD': 'e', // CYRILLIC SMALL LETTER ABKHASIAN CHE
+  '\u04BF': 'e', // CYRILLIC SMALL LETTER ABKHASIAN CHE WITH DESCENDER
+  '\u13AC': 'e', // CHEROKEE LETTER GV
+  '\u1D07': 'e', // LATIN LETTER SMALL CAPITAL E
+  '\u212E': 'e', // ESTIMATED SYMBOL
+  '\u22FF': 'e', // Z NOTATION BAG MEMBERSHIP
+  '\u2D39': 'e', // TIFINAGH LETTER YADD
+  '\uA4F0': 'e', // LISU LETTER E
+  '\uA5CB': 'e', // VAI SYLLABLE TO
+  '\uAB32': 'e', // LATIN SMALL LETTER BLACKLETTER E
+  '\uAB7C': 'e', // CHEROKEE SMALL LETTER GV
+  '\u{10286}': 'e', // LYCIAN LETTER I
+  '\u{118A6}': 'e', // WARANG CITI CAPITAL LETTER II
+  '\u{118AE}': 'e', // WARANG CITI CAPITAL LETTER YUJ
+  '\u{1DF81}': 'e', // LATIN CAPITAL LETTER E WITH BENT TOPBAR
+  // `d`
+  '\u00D0': 'd', // LATIN CAPITAL LETTER ETH
+  '\u0110': 'd', // LATIN CAPITAL LETTER D WITH STROKE
+  '\u0111': 'd', // LATIN SMALL LETTER D WITH STROKE
+  '\u0189': 'd', // LATIN CAPITAL LETTER AFRICAN D
+  '\u018B': 'd', // LATIN CAPITAL LETTER D WITH TOPBAR
+  '\u018C': 'd', // LATIN SMALL LETTER D WITH TOPBAR
+  '\u0256': 'd', // LATIN SMALL LETTER D WITH TAIL
+  '\u0257': 'd', // LATIN SMALL LETTER D WITH HOOK
+  '\u0501': 'd', // CYRILLIC SMALL LETTER KOMI DE
+  '\u13A0': 'd', // CHEROKEE LETTER A
+  '\u13E7': 'd', // CHEROKEE LETTER TSU
+  '\u146F': 'd', // CANADIAN SYLLABICS KO
+  '\u15DE': 'd', // CANADIAN SYLLABICS CARRIER THE
+  '\u15EA': 'd', // CANADIAN SYLLABICS CARRIER PE
+  '\u1D05': 'd', // LATIN LETTER SMALL CAPITAL D
+  '\u20AB': 'd', // DONG SIGN
+  '\uA4D2': 'd', // LISU LETTER PHA
+  '\uA4D3': 'd', // LISU LETTER DA
+  '\uAB70': 'd', // CHEROKEE SMALL LETTER A
+  '\u{1018B}': 'd', // GREEK ONE QUARTER SIGN
+  '\u{1DF2D}': 'd', // LATIN SMALL LETTER D WITH HOOK AND PALATAL HOOK
+  // `c`
+  '\u00A2': 'c', // CENT SIGN
+  '\u023C': 'c', // LATIN SMALL LETTER C WITH STROKE
+  '\u03F2': 'c', // GREEK LUNATE SIGMA SYMBOL
+  '\u03F9': 'c', // GREEK CAPITAL LUNATE SIGMA SYMBOL
+  '\u0421': 'c', // CYRILLIC CAPITAL LETTER ES
+  '\u0441': 'c', // CYRILLIC SMALL LETTER ES
+  '\u04AA': 'c', // CYRILLIC CAPITAL LETTER ES WITH DESCENDER
+  '\u04AB': 'c', // CYRILLIC SMALL LETTER ES WITH DESCENDER
+  '\u1004': 'c', // MYANMAR LETTER NGA
+  '\u105A': 'c', // MYANMAR LETTER MON NGA
+  '\u13DF': 'c', // CHEROKEE LETTER TLI
+  '\u1C83': 'c', // CYRILLIC SMALL LETTER WIDE ES
+  '\u1D04': 'c', // LATIN LETTER SMALL CAPITAL C
+  '\u20A1': 'c', // COLON SIGN
+  '\u2CA4': 'c', // COPTIC CAPITAL LETTER SIMA
+  '\u2CA5': 'c', // COPTIC SMALL LETTER SIMA
+  '\uA4DA': 'c', // LISU LETTER CA
+  '\uABAF': 'c', // CHEROKEE SMALL LETTER TLI
+  '\u{102A2}': 'c', // CARIAN LETTER D
+  '\u{10302}': 'c', // OLD ITALIC LETTER KE
+  '\u{10415}': 'c', // DESERET CAPITAL LETTER CHEE
+  '\u{1043D}': 'c', // DESERET SMALL LETTER CHEE
+  '\u{1051B}': 'c', // ELBASAN LETTER SE
+  '\u{118E9}': 'c', // WARANG CITI DIGIT NINE
+  '\u{118F2}': 'c', // WARANG CITI NUMBER NINETY
+  '\u{1D134}': 'c', // MUSICAL SYMBOL COMMON TIME
+  '\u{1F16E}': 'c', // CIRCLED C WITH OVERLAID BACKSLASH
+  '\u{1F74C}': 'c', // ALCHEMICAL SYMBOL FOR CALX
+  // `o`
+  '\u00D8': 'o', // LATIN CAPITAL LETTER O WITH STROKE
+  '\u00F8': 'o', // LATIN SMALL LETTER O WITH STROKE
+  '\u019F': 'o', // LATIN CAPITAL LETTER O WITH MIDDLE TILDE
+  '\u0275': 'o', // LATIN SMALL LETTER BARRED O
+  '\u0398': 'o', // GREEK CAPITAL LETTER THETA
+  '\u039F': 'o', // GREEK CAPITAL LETTER OMICRON
+  '\u03B8': 'o', // GREEK SMALL LETTER THETA
+  '\u03BF': 'o', // GREEK SMALL LETTER OMICRON
+  '\u03C3': 'o', // GREEK SMALL LETTER SIGMA
+  '\u03ED': 'o', // COPTIC SMALL LETTER SHIMA
+  '\u041E': 'o', // CYRILLIC CAPITAL LETTER O
+  '\u043E': 'o', // CYRILLIC SMALL LETTER O
+  '\u0472': 'o', // CYRILLIC CAPITAL LETTER FITA
+  '\u0473': 'o', // CYRILLIC SMALL LETTER FITA
+  '\u04E8': 'o', // CYRILLIC CAPITAL LETTER BARRED O
+  '\u04E9': 'o', // CYRILLIC SMALL LETTER BARRED O
+  '\u0555': 'o', // ARMENIAN CAPITAL LETTER OH
+  '\u0585': 'o', // ARMENIAN SMALL LETTER OH
+  '\u05E1': 'o', // HEBREW LETTER SAMEKH
+  '\u0629': 'o', // ARABIC LETTER TEH MARBUTA
+  '\u0647': 'o', // ARABIC LETTER HEH
+  '\u0665': 'o', // ARABIC-INDIC DIGIT FIVE
+  '\u06BE': 'o', // ARABIC LETTER HEH DOACHASHMEE
+  '\u06C1': 'o', // ARABIC LETTER HEH GOAL
+  '\u06C3': 'o', // ARABIC LETTER TEH MARBUTA GOAL
+  '\u06D5': 'o', // ARABIC LETTER AE
+  '\u06F5': 'o', // EXTENDED ARABIC-INDIC DIGIT FIVE
+  '\u06FF': 'o', // ARABIC LETTER HEH WITH INVERTED V
+  '\u07C0': 'o', // NKO DIGIT ZERO
+  '\u07CB': 'o', // NKO LETTER EE
+  '\u0840': 'o', // MANDAIC LETTER HALQA
+  '\u0966': 'o', // DEVANAGARI DIGIT ZERO
+  '\u09E6': 'o', // BENGALI DIGIT ZERO
+  '\u0A66': 'o', // GURMUKHI DIGIT ZERO
+  '\u0AE6': 'o', // GUJARATI DIGIT ZERO
+  '\u0B20': 'o', // ORIYA LETTER TTHA
+  '\u0B66': 'o', // ORIYA DIGIT ZERO
+  '\u0BE6': 'o', // TAMIL DIGIT ZERO
+  '\u0C02': 'o', // TELUGU SIGN ANUSVARA
+  '\u0C66': 'o', // TELUGU DIGIT ZERO
+  '\u0C82': 'o', // KANNADA SIGN ANUSVARA
+  '\u0CE6': 'o', // KANNADA DIGIT ZERO
+  '\u0D02': 'o', // MALAYALAM SIGN ANUSVARA
+  '\u0D20': 'o', // MALAYALAM LETTER TTHA
+  '\u0D66': 'o', // MALAYALAM DIGIT ZERO
+  '\u0D82': 'o', // SINHALA SIGN ANUSVARAYA
+  '\u0E50': 'o', // THAI DIGIT ZERO
+  '\u0ED0': 'o', // LAO DIGIT ZERO
+  '\u1010': 'o', // MYANMAR LETTER TA
+  '\u101D': 'o', // MYANMAR LETTER WA
+  '\u1040': 'o', // MYANMAR DIGIT ZERO
+  '\u10D7': 'o', // GEORGIAN LETTER TAN
+  '\u10FF': 'o', // GEORGIAN LETTER LABIAL SIGN
+  '\u110B': 'o', // HANGUL CHOSEONG IEUNG
+  '\u11BC': 'o', // HANGUL JONGSEONG IEUNG
+  '\u12D0': 'o', // ETHIOPIC SYLLABLE PHARYNGEAL A
+  '\u1340': 'o', // ETHIOPIC SYLLABLE TZA
+  '\u13A4': 'o', // CHEROKEE LETTER U
+  '\u13BE': 'o', // CHEROKEE LETTER NA
+  '\u13EB': 'o', // CHEROKEE LETTER WI
+  '\u17E0': 'o', // KHMER DIGIT ZERO
+  '\u1A32': 'o', // TAI THAM LETTER HIGH TA
+  '\u1A45': 'o', // TAI THAM LETTER WA
+  '\u1A80': 'o', // TAI THAM HORA DIGIT ZERO
+  '\u1A90': 'o', // TAI THAM THAM DIGIT ZERO
+  '\u1BEA': 'o', // BATAK VOWEL SIGN I
+  '\u1C82': 'o', // CYRILLIC SMALL LETTER NARROW O
+  '\u1CBF': 'o', // GEORGIAN MTAVRULI CAPITAL LETTER LABIAL SIGN
+  '\u1D0F': 'o', // LATIN LETTER SMALL CAPITAL O
+  '\u1D11': 'o', // LATIN SMALL LETTER SIDEWAYS O
+  '\u2205': 'o', // EMPTY SET
+  '\u2296': 'o', // CIRCLED MINUS
+  '\u229D': 'o', // CIRCLED DASH
+  '\u2300': 'o', // DIAMETER SIGN
+  '\u2365': 'o', // APL FUNCTIONAL SYMBOL CIRCLE DIAERESIS
+  '\u236C': 'o', // APL FUNCTIONAL SYMBOL ZILDE
+  '\u2C90': 'o', // COPTIC CAPITAL LETTER THETHE
+  '\u2C91': 'o', // COPTIC SMALL LETTER THETHE
+  '\u2C9E': 'o', // COPTIC CAPITAL LETTER O
+  '\u2C9F': 'o', // COPTIC SMALL LETTER O
+  '\u2D31': 'o', // TIFINAGH LETTER YAB
+  '\u2D41': 'o', // TIFINAGH LETTER BERBER ACADEMY YAH
+  '\u2D54': 'o', // TIFINAGH LETTER YAR
+  '\u3007': 'o', // IDEOGRAPHIC NUMBER ZERO
+  '\uA4F3': 'o', // LISU LETTER O
+  '\uA6A2': 'o', // BAMUM LETTER U
+  '\uA74A': 'o', // LATIN CAPITAL LETTER O WITH LONG STROKE OVERLAY
+  '\uA74B': 'o', // LATIN SMALL LETTER O WITH LONG STROKE OVERLAY
+  '\uAB3D': 'o', // LATIN SMALL LETTER BLACKLETTER O
+  '\uAB3E': 'o', // LATIN SMALL LETTER BLACKLETTER O WITH STROKE
+  '\uAB74': 'o', // CHEROKEE SMALL LETTER U
+  '\uAB8E': 'o', // CHEROKEE SMALL LETTER NA
+  '\uABBB': 'o', // CHEROKEE SMALL LETTER WI
+  '\u{10292}': 'o', // LYCIAN LETTER U
+  '\u{102AB}': 'o', // CARIAN LETTER O
+  '\u{1030F}': 'o', // OLD ITALIC LETTER O
+  '\u{10404}': 'o', // DESERET CAPITAL LETTER LONG O
+  '\u{1042C}': 'o', // DESERET SMALL LETTER LONG O
+  '\u{104C2}': 'o', // OSAGE CAPITAL LETTER O
+  '\u{104EA}': 'o', // OSAGE SMALL LETTER O
+  '\u{10516}': 'o', // ELBASAN LETTER O
+  '\u{1051E}': 'o', // ELBASAN LETTER THE
+  '\u{1092C}': 'o', // LYDIAN LETTER O
+  '\u{10C17}': 'o', // OLD TURKIC LETTER YENISEI AY
+  '\u{10D07}': 'o', // HANIFI ROHINGYA LETTER HA
+  '\u{11116}': 'o', // CHAKMA LETTER TAA
+  '\u{11124}': 'o', // CHAKMA LETTER WAA
+  '\u{11302}': 'o', // GRANTHA SIGN ANUSVARA
+  '\u{114D0}': 'o', // TIRHUTA DIGIT ZERO
+  '\u{118B5}': 'o', // WARANG CITI CAPITAL LETTER AT
+  '\u{118C8}': 'o', // WARANG CITI SMALL LETTER E
+  '\u{118D7}': 'o', // WARANG CITI SMALL LETTER BU
+  '\u{118E0}': 'o', // WARANG CITI DIGIT ZERO
+  '\u{11DE0}': 'o', // TOLONG SIKI DIGIT ZERO
+  '\u{1699B}': 'o', // BAMUM LETTER PHASE-E SUAEN
+  '\u{16AE9}': 'o', // BASSA VAH LETTER OO
+  '\u{16E80}': 'o', // MEDEFAIDRIN DIGIT ZERO
+  '\u{1D21A}': 'o', // GREEK VOCAL NOTATION SYMBOL-52
+  '\u{1DF3C}': 'o', // LATIN SMALL LETTER THETA WITH PALATAL HOOK
+  '\u{1E140}': 'o', // NYIAKENG PUACHUE HMONG DIGIT ZERO
+  '\u{1E2F0}': 'o', // WANCHO DIGIT ZERO
+  '\u{1F714}': 'o', // ALCHEMICAL SYMBOL FOR SALT
+  // `co`
+  '\uAB43': 'co', // LATIN SMALL LETTER TURNED O OPEN-O
+  '\uAB44': 'co', // LATIN SMALL LETTER TURNED O OPEN-O WITH STROKE
+};
+
+/** Look-alike code point → the plain character(s) of the delimiter it is read as. */
+export const DELIMITER_CONFUSABLES: ReadonlyMap<string, string> = new Map(Object.entries(LOOK_ALIKES));

@@ -13,6 +13,9 @@
  *   in the future and at most MAX_TOKEN_AGE old (jose `maxTokenAge`: a token
  *   minted with a far-future `exp` still dies on schedule); and the claims we
  *   rely on (`sub`, `client_id`, `jti`, `scope`) present.
+ *
+ * A token that fails any of these is an InvalidTokenError (401). Failing to
+ * obtain the keys is not the token's fault: KeySetUnavailableError (503).
  */
 import { createRemoteJWKSet, errors as joseErrors, type JWTVerifyGetKey, jwtVerify } from 'jose';
 import * as z from 'zod';
@@ -53,6 +56,58 @@ export class InvalidTokenError extends Error {
   override readonly name = 'InvalidTokenError';
 }
 
+/**
+ * The signing keys could not be obtained (key endpoint down, slow, answering
+ * something that is not a key set): the token was never judged. Deliberately
+ * NOT an InvalidTokenError: the HTTP layer answers 503, so clients keep a token
+ * that is most likely fine instead of discarding it on `invalid_token`.
+ * `code` repeats the underlying machine code (e.g. `ERR_JWKS_TIMEOUT`) for the
+ * logs; the message is fixed and the cause is never sent to a client.
+ */
+export class KeySetUnavailableError extends Error {
+  override readonly name = 'KeySetUnavailableError';
+  readonly code: string;
+
+  constructor(cause: unknown) {
+    super('signing keys are unavailable', { cause });
+    const code = cause instanceof Error ? (cause as { code?: unknown }).code : undefined;
+    this.code = typeof code === 'string' ? code : 'ERR_KEY_SET_UNAVAILABLE';
+  }
+}
+
+/**
+ * Tells "the keys could not be obtained" from "this token is bad" by WHERE the
+ * error was thrown, not by its text. jose (6.x) reports a key endpoint that
+ * answers non-200 or non-JSON as a bare `JOSEError` (`ERR_JOSE_GENERIC`, no
+ * class of its own), a hanging one as `JWKSTimeout`, a malformed set as
+ * `JWKSInvalid`, a refused connection as fetch's `TypeError`: no list of
+ * classes or messages covers them all, or the ones a later version adds. But
+ * all of them, and only them, come out of the key resolver, which jose calls
+ * after it has parsed the header and applied the algorithm allowlist and before
+ * it checks the signature and the claims. So whatever the resolver throws is a
+ * key-set failure, except the two errors by which a key set that WAS read says
+ * the token names no key of it (unknown or ambiguous `kid`): those stay token
+ * faults. When the refetch jose does for an unknown `kid` fails, the fetch
+ * error is what comes out, hence 503, not 401.
+ *
+ * Either way the request is refused: this only chooses between 401 and 503.
+ */
+const tagKeySetFailures = (keys: JWTVerifyGetKey): JWTVerifyGetKey => {
+  return async (protectedHeader, token) => {
+    try {
+      return await keys(protectedHeader, token);
+    } catch (error) {
+      if (
+        error instanceof joseErrors.JWKSNoMatchingKey ||
+        error instanceof joseErrors.JWKSMultipleMatchingKeys
+      ) {
+        throw error;
+      }
+      throw new KeySetUnavailableError(error);
+    }
+  };
+};
+
 export interface AccessTokenVerifierOptions {
   readonly issuer: string;
   /** This server's canonical resource URI; the only accepted audience. */
@@ -74,10 +129,11 @@ export const remoteJwks = (jwksUrl: string): JWTVerifyGetKey => {
 };
 
 export const createAccessTokenVerifier = (options: AccessTokenVerifierOptions): AccessTokenVerifier => {
+  const keys = tagKeySetFailures(options.keys);
   return async (token) => {
     let payload: unknown;
     try {
-      ({ payload } = await jwtVerify(token, options.keys, {
+      ({ payload } = await jwtVerify(token, keys, {
         issuer: options.issuer,
         audience: options.audience,
         typ: ACCESS_TOKEN_TYP,
@@ -87,6 +143,8 @@ export const createAccessTokenVerifier = (options: AccessTokenVerifierOptions): 
         requiredClaims: ['iss', 'sub', 'aud', 'exp', 'iat', 'jti', 'client_id'],
       }));
     } catch (error) {
+      // Key-set failures were tagged in the resolver (KeySetUnavailableError, not a JOSEError) and
+      // fall through; every JOSEError left is jose judging the token itself.
       if (error instanceof joseErrors.JOSEError) {
         // jose's messages name the failed check (e.g. `"aud" claim check failed`) and never echo the token.
         throw new InvalidTokenError(

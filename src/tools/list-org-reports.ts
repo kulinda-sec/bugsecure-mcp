@@ -2,7 +2,7 @@ import * as z from 'zod';
 
 import { ListOrgReportsDocument } from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
-import { idInput, paginationInput, paginationOutput, page } from './shared/common.js';
+import { idInput, paginationInput, paginationOutput, page, userText } from './shared/common.js';
 import {
   ReportStatusSchema,
   ReportSummarySchema,
@@ -30,13 +30,7 @@ export const listOrgReports = defineTool({
     status: ReportStatusSchema.optional().describe('Only reports in this status.'),
     severity: SeveritySchema.optional().describe('Only reports with this claimed severity.'),
     assignedTriageId: idInput('Only reports assigned to this triager (user id).').optional(),
-    query: z
-      .string()
-      .trim()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('Text to look for in titles and descriptions.'),
+    query: userText(1, 200, 'Text to look for in titles and descriptions.').optional(),
     ...paginationInput(MAX_LIMIT),
   }),
   output: z.object({
