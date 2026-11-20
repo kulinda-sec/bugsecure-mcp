@@ -564,13 +564,17 @@ describe('hiddenCharacter()', () => {
   });
 
   it('refuses everything escapeUntrusted() would remove or escape, bar the accepted sequences', () => {
+    // Every code point, so one assertion at the end: a million `expect` calls make this the
+    // slowest test of the suite by far, and time out on a slow runner.
+    const disagreements: string[] = [];
     for (let codePoint = 0; codePoint <= 0x10ffff; codePoint += 1) {
       if (codePoint >= 0xd800 && codePoint <= 0xdfff) continue;
-      const char = String.fromCodePoint(codePoint);
-      const changed = escapeUntrusted(`a${char}b`) !== `a${char}b`;
-      expect(hiddenCharacter(`a${char}b`) !== null, codePoint.toString(16)).toBe(changed);
+      const text = `a${String.fromCodePoint(codePoint)}b`;
+      const changed = escapeUntrusted(text) !== text;
+      if ((hiddenCharacter(text) !== null) !== changed) disagreements.push(codePoint.toString(16));
     }
-  });
+    expect(disagreements).toEqual([]);
+  }, 60_000);
 });
 
 describe('cleanMessage()', () => {
