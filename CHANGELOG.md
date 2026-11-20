@@ -10,6 +10,17 @@ are generated from the commit history by [cocogitto](https://docs.cocogitto.io)
 longer edited by hand.
 
 - - -
+## [v0.3.3](https://github.com/kulinda-sec/bugsecure-mcp/compare/2d82829e6b0a85603d1d8f447d031d52c3ee1025..v0.3.3) - 2026-11-20
+#### Bug Fixes
+- (**untrusted**) close fence, slug, hidden-text and key-outage gaps found in review (#43) - ([2d82829](https://github.com/kulinda-sec/bugsecure-mcp/commit/2d82829e6b0a85603d1d8f447d031d52c3ee1025)) - Baakey Dow
+#### Chores
+- (**deps**) bump the development group across 1 directory with 7 updates (#45) - ([3cd5881](https://github.com/kulinda-sec/bugsecure-mcp/commit/3cd5881b1acb5ff5c2def17d40bf8927b95aa01e)) - dependabot[bot], dependabot[bot], Baakey Dow
+- (**deps**) bump jose from 6.2.13 to 6.2.15 in the production group (#36) - ([41e4186](https://github.com/kulinda-sec/bugsecure-mcp/commit/41e4186841bcaa4dd32fef00c176688dc8359452)) - dependabot[bot], dependabot[bot], Baakey Dow
+- (**docker**) bump distroless/nodejs24-debian13 from `b8cec4b` to `9fc11f6` (#39) - ([086deec](https://github.com/kulinda-sec/bugsecure-mcp/commit/086deec9302c9cf1ec3db36fa18a0b9647e60534)) - dependabot[bot], dependabot[bot], Baakey Dow
+- (**docker**) bump node from 24.22.0-trixie-slim to 24.22.3-trixie-slim (#44) - ([9322aaa](https://github.com/kulinda-sec/bugsecure-mcp/commit/9322aaa407cdd7d194c4b3a318c2c0d76e7e5178)) - dependabot[bot], dependabot[bot], Baakey Dow
+
+- - -
+
 ## [v0.3.2](https://github.com/kulinda-sec/bugsecure-mcp/compare/833b31c6237abea83bee4277bec6cfb139193176..v0.3.2) - 2026-11-04
 #### Chores
 - (**deps**) bump source-map-js from 1.2.1 to 1.2.2 (#33) - ([d2c0282](https://github.com/kulinda-sec/bugsecure-mcp/commit/d2c0282b56bd145522a7a3779bc172c47bf9a810)) - dependabot[bot], dependabot[bot]
