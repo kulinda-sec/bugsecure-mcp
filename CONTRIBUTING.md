@@ -204,7 +204,7 @@ export const getLeaderboard = defineTool({
     limit: z.number().int().min(1).max(100).default(20).describe('How many researchers to return.'),
   }),
   output: z.object({
-    // Every output string is fenced (`wrapped`) or strictly shaped (`id`, `slug`, `timestamp`, `code`, enums).
+    // Every output string is fenced (`wrapped`) or strictly shaped (`id`, `timestamp`, `code`, enums).
     researchers: z.array(z.object({ rank: z.number().int(), userId: id(), username: wrapped('Username') })),
   }),
   async handler(input, { graphql, signal }) {
@@ -329,18 +329,24 @@ time and is never edited by hand.
 - **Fence free text.** Every free-text field (report bodies, comments, programme
   text, usernames, organization names…) goes through `untrusted(source, text)`
   and is declared with `wrapped()`, which checks at runtime that it really is
-  fenced. Identifiers, slugs, enums, numbers, dates and machine codes are not
+  fenced. Identifiers, enums, numbers, dates and machine codes are not
   fenced but must have one of the named shapes in `PATTERNS`
-  (`src/tools/shared/common.ts`: `id()`, `slug()`/`safeSlug()`, `z.enum`,
-  `timestamp()`, `code('cvss-vector')`…); the registry test accepts nothing
-  else, and adding a shape is a reviewed edit there.
+  (`src/tools/shared/common.ts`: `id()`, `z.enum`, `timestamp()`,
+  `code('cvss-vector')`…); the registry test accepts nothing else, and adding a
+  shape is a reviewed edit there. A strict shape is for values BugSecure
+  defines: a narrow character set does not make a value trusted. A programme's
+  or organisation's slug is its owner's words with hyphens, so it is fenced
+  (`fencedSlug()`); only a badge's slug, a name from BugSecure's own catalogue,
+  has a shape (`code('badge-slug')`).
 - **Keep tools/list small.** It is sent in every conversation (budget: 80 KB,
   `registry.test.ts`). Describe a field only when its name does not say it;
   never repeat what the tool description or the fencing note already says.
 - **Validate input tightly.** Bounded strings and numbers, ids with `idInput()`,
-  free text a user writes with `userText()` (normalises line endings, refuses
-  control characters), `.describe()` on every field (it is the model's only
-  documentation).
+  every free-text argument, searches included, with `userText()` (normalises
+  line endings; refuses control characters, bidirectional controls and
+  invisible characters, see `hiddenCharacter` in `src/untrusted.ts`), any
+  other string with an anchored pattern, `.describe()` on every field (it is
+  the model's only documentation).
 - **Never log content.** Log metadata only (ids, counts, codes). The logger
   redacts sensitive-looking keys, but do not rely on it.
 - **Throw `BugSecureError` for expected failures** (not found, invalid state) with

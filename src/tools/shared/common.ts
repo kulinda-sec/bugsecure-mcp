@@ -4,8 +4,14 @@
  *
  * Output rule (enforced by src/tools/registry.test.ts): every string a tool
  * returns is EITHER third-party text fenced by `untrusted()` (`wrapped()`), OR
- * constrained to one of the NAMED shapes below (`id()`, `slug()`, `code()`),
- * an enum, or a date-time — so nothing free-form reaches the model unfenced.
+ * constrained to one of the NAMED shapes below (`id()`, `code()`), an enum, or
+ * a date-time — so nothing free-form reaches the model unfenced.
+ *
+ * A strict shape is for values BugSecure itself defines. A value someone else
+ * chose the words of is third-party text whatever its character set: a
+ * programme's slug is its organisation-written title with hyphens, an
+ * organisation's slug is typed by its creator, so both are fenced
+ * (`fencedSlug()`), never given a shape.
  *
  * Output shapes are checked at runtime but not published as JSON Schema
  * `pattern`s: every pattern would be repeated for every field in tools/list,
@@ -13,7 +19,7 @@
  */
 import * as z from 'zod';
 
-import { hasControlCharacters, isUntrustedBlock } from '../../untrusted.js';
+import { hasControlCharacters, hiddenCharacter, isUntrustedBlock, untrusted } from '../../untrusted.js';
 
 /** A taxonomy node: a dotted snake_case path, e.g. `cross_site_scripting_xss.stored.non_privileged_user_to_anyone`. */
 const NODE = String.raw`[a-z0-9_]{1,100}(?:\.[a-z0-9_]{1,100}){0,9}`;
@@ -28,8 +34,12 @@ const CVSS = String.raw`CVSS:(?:3\.1|4\.0)(?:\/[A-Za-z]{1,4}:[A-Za-z]{1,8}){1,40
 export const PATTERNS = {
   /** BugSecure ids (UUIDs today). Deliberately permissive in shape, strict in charset. */
   id: /^[A-Za-z0-9_-]{1,64}$/,
-  /** URL slugs as BugSecure generates them. Anything else is not returned (see `safeSlug`). */
-  slug: /^[a-z0-9-]{1,100}$/,
+  /**
+   * The slug of a BADGE: a fixed name from BugSecure's own catalogue, nobody
+   * else writes one. Never for a programme's or an organisation's slug, which
+   * carry their owner's words (see `fencedSlug`).
+   */
+  'badge-slug': /^[a-z0-9-]{1,100}$/,
   'taxonomy-node-id': new RegExp(`^${NODE}$`),
   'taxonomy-version': /^[A-Za-z0-9._@:+-]{1,100}$/,
   'cvss-version': /^(?:3\.1|4\.0)$/,
@@ -64,9 +74,17 @@ export const PATTERNS = {
 
 export type PatternName = keyof typeof PATTERNS;
 
-/** For input schemas and callers that need the raw expressions. */
+/** For input schemas and callers that need the raw expression. */
 export const ID_PATTERN = PATTERNS.id;
-export const SLUG_PATTERN = PATTERNS.slug;
+
+/**
+ * What a programme or organisation slug looks like in a BugSecure URL. NOT an
+ * output shape (it is deliberately absent from PATTERNS): these slugs are
+ * written by third parties, so this only validates a slug argument and decides
+ * which API slugs are worth returning, fenced. 255 leaves room for the longest
+ * programme slug the API builds (a 200-character title plus its suffix).
+ */
+export const THIRD_PARTY_SLUG_PATTERN = /^[a-z0-9-]{1,255}$/;
 
 /**
  * How each output string is constrained, for the registry test: `untrusted` =
@@ -97,15 +115,6 @@ export const code = (name: PatternName, description?: string): z.ZodString => {
 /** An id in tool output. */
 export const id = (description?: string): z.ZodString => code('id', description);
 
-/** A slug in tool output; `null` when BugSecure returned one that is not a plain slug. */
-export const slug = (description?: string): z.ZodNullable<z.ZodString> =>
-  code('slug', description).nullable();
-
-/** Map an API slug to the output: dropped (null) unless it is a plain slug. */
-export const safeSlug = (value: string | null | undefined): string | null => {
-  return typeof value === 'string' && SLUG_PATTERN.test(value) ? value : null;
-};
-
 /** `value` when it has the named shape, else null (for API values a tool can do without). */
 export const ifShaped = (name: PatternName, value: string | null | undefined): string | null => {
   return typeof value === 'string' && PATTERNS[name].test(value) ? value : null;
@@ -122,6 +131,18 @@ export const wrapped = (description?: string): z.ZodString => {
   const described = description === undefined ? schema : schema.describe(description);
   outputStringPolicy.add(described, { policy: 'untrusted' });
   return described;
+};
+
+/**
+ * A programme's or organisation's slug in tool output (declare the field
+ * `wrapped().nullable()`): fenced, because its owner chose the words in it.
+ * `null` when BugSecure returned something that is not a URL slug (other
+ * characters, or longer than any slug it builds): such a value opens no page
+ * and no tool would accept it back, so it is not worth showing even fenced.
+ * Tools that pass a slug on to the API use the API's own value, never this.
+ */
+export const fencedSlug = (source: string, value: string | null | undefined): string | null => {
+  return typeof value === 'string' && THIRD_PARTY_SLUG_PATTERN.test(value) ? untrusted(source, value) : null;
 };
 
 const isoDateTime = z.iso.datetime({ offset: true });
@@ -141,11 +162,37 @@ export const timestamp = (): z.ZodString => {
 };
 
 /**
- * Free text a user writes (reports, comments, appeals, grades): trimmed,
- * Windows line endings normalised, bounded, and refused when it carries a
- * control character (other than tab and line feed) or a Unicode line
- * separator — such characters have no business in a report, and can hide or
- * rearrange what the user is shown for approval.
+ * Refuse a character that hides or reorders text (`hiddenCharacter`), naming
+ * it so the model can remove it. A runtime refusal: nothing is published in
+ * the input schema.
+ */
+export const refuseHiddenCharacters = (value: string, context: z.RefinementCtx): void => {
+  const hidden = hiddenCharacter(value);
+  if (hidden === null) return;
+  context.addIssue({
+    code: 'custom',
+    message:
+      hidden.kind === 'direction-changing'
+        ? `must not contain direction-changing (bidirectional control) characters: remove ${hidden.escape}`
+        : `must not contain invisible characters: remove ${hidden.escape} ` +
+          '(a zero-width joiner or variation selector is accepted only inside an emoji or a script that needs it)',
+  });
+};
+
+/**
+ * Free text the model passes in (reports, comments, appeals, grades, search
+ * terms): trimmed, Windows line endings normalised, bounded, and refused when
+ * it carries
+ * - a control character other than tab and line feed, or a Unicode line or
+ *   paragraph separator (`hasControlCharacters`);
+ * - a bidirectional control, which reorders what is displayed;
+ * - an invisible character: the zero-width space, word joiner, BOM, soft
+ *   hyphen, fillers, the tag block and the rest of
+ *   `Default_Ignorable_Code_Point`. The zero-width joiner and non-joiner and
+ *   the emoji/text presentation selectors pass only where an emoji sequence or
+ *   a script that needs them puts them (`hiddenCharacter` has the exact rule).
+ * Such characters have no business in a report, and can hide or rearrange what
+ * the user is shown for approval, or what the recipient reads.
  */
 export const userText = (min: number, max: number, description: string): z.ZodString =>
   z
@@ -158,6 +205,7 @@ export const userText = (min: number, max: number, description: string): z.ZodSt
       (v) => !hasControlCharacters(v),
       'must not contain control characters (other than tab and new line)',
     )
+    .superRefine(refuseHiddenCharacters)
     .describe(description);
 
 /**

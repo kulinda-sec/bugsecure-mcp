@@ -2,7 +2,7 @@ import * as z from 'zod';
 
 import { GetTaxonomyDocument } from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
-import { code, ifShaped, paginationInput, paginationOutput, wrapped } from './shared/common.js';
+import { code, ifShaped, paginationInput, paginationOutput, userText, wrapped } from './shared/common.js';
 import { TAXONOMY_NODE_ID } from './shared/taxonomy.js';
 import { defineTool } from './define-tool.js';
 
@@ -17,13 +17,11 @@ export const getTaxonomy = defineTool({
   requiredScopes: ['programs:read'],
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    query: z
-      .string()
-      .trim()
-      .min(2)
-      .max(100)
-      .optional()
-      .describe('Case-insensitive words that must all appear in the node id or name, e.g. "stored xss".'),
+    query: userText(
+      2,
+      100,
+      'Case-insensitive words that must all appear in the node id or name, e.g. "stored xss".',
+    ).optional(),
     ...paginationInput(200, 50),
   }),
   output: z.object({

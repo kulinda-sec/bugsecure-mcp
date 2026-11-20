@@ -146,6 +146,34 @@ const unconstrainedStrings = (schema: z.core.$ZodType, path: string): string[] =
   }
 };
 
+/** The policy of every output string whose field name says it is a slug, by path. */
+const slugPolicies = (
+  schema: z.core.$ZodType,
+  path: string,
+): [path: string, policy: string | undefined][] => {
+  const def = schema._zod.def;
+  switch (def.type) {
+    case 'object':
+      return Object.entries((def as z.core.$ZodObjectDef).shape).flatMap(([k, v]) =>
+        slugPolicies(v, `${path}.${k}`),
+      );
+    case 'array':
+      return slugPolicies((def as z.core.$ZodArrayDef).element, `${path}[]`);
+    case 'nullable':
+    case 'optional':
+    case 'default':
+      return slugPolicies((def as z.core.$ZodNullableDef).innerType, path);
+    case 'record':
+      return slugPolicies((def as z.core.$ZodRecordDef).valueType, `${path}{}`);
+    case 'union':
+      return (def as z.core.$ZodUnionDef).options.flatMap((o) => slugPolicies(o, path));
+    case 'string':
+      return /slug$/i.test(path) ? [[path, outputStringPolicy.get(schema)?.policy]] : [];
+    default:
+      return [];
+  }
+};
+
 describe('output strings', () => {
   it.each(ALL_TOOLS.map((t) => [t.name, t] as const))(
     '%s returns no free-form string outside an untrusted-content fence',
@@ -153,6 +181,28 @@ describe('output strings', () => {
       expect(unconstrainedStrings(tool.output, 'output')).toEqual([]);
     },
   );
+
+  it('fences every slug but a badge’s: a programme’s or organisation’s is written by its owner', () => {
+    // A strict shape would let the owner's words through as trusted output, a hundred characters at a time.
+    const slugs = ALL_TOOLS.flatMap((tool) => slugPolicies(tool.output, tool.name));
+
+    expect(slugs.filter(([, policy]) => policy !== 'untrusted')).toEqual([
+      ['list_badges.badges[].slug', 'badge-slug'],
+    ]);
+    expect(slugs.map(([path]) => path)).toEqual(
+      expect.arrayContaining([
+        'get_program.program.slug',
+        'get_program.program.organization.slug',
+        'search_programs.programs[].slug',
+        'list_org_programs.programs[].organization.slug',
+        'list_my_organizations.organizations[].slug',
+        'search.results[].slug',
+        'submit_report.report.program.slug',
+        'get_report.report.program.slug',
+        'list_org_reports.reports[].program.slug',
+      ]),
+    );
+  });
 
   it('the walker flags an unconstrained string, even one with an ad-hoc regex', () => {
     expect(
