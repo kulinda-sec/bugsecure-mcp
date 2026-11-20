@@ -67,11 +67,37 @@ const NONCE_PATTERN = `[0-9a-f]{${String(NONCE_BYTES * 2)}}`;
 const SOURCE_PATTERN = '[A-Za-z0-9:._/#@-]';
 const MAX_SOURCE_LENGTH = 120;
 
+// A few listed look-alikes are themselves combining marks (anusvara signs drawn
+// as a ring, tone marks drawn as a dash). Such a mark can be read two ways: as
+// the `o` or hyphen it resembles, or, like any combining mark, as nothing. The
+// fold keeps both readings open by writing a run of them as ONE of these
+// private-use tokens, which the delimiter pattern accepts as that character or
+// skips. One token per run, never two in a row, so the pattern has no
+// repetition over them and matching stays linear whatever the text holds.
+const RING_OR_NOTHING = '\uE000';
+const DASH_OR_NOTHING = '\uE001';
+const EITHER_OR_NOTHING = '\uE002';
+const TOKENS = /[\uE000-\uE002]/u;
+/** The token for a mark the table lists; a mark listed as anything else needs a reading of its own here. */
+const markToken = (mark: string, listed: string): string => {
+  if (listed === 'o') return RING_OR_NOTHING;
+  if (listed === '-') return DASH_OR_NOTHING;
+  throw new Error(`untrusted-confusables: combining mark ${visibleEscape(mark)} is listed as "${listed}"`);
+};
+/** The token for a run made of both: `a` joined by `b`. */
+const mergeTokens = (a: string, b: string): string => (a === b ? a : EITHER_OR_NOTHING);
+
 // `<` + optional whitespace, slashes or backslashes + tag name, any case, its
 // `o` possibly a digit zero. Matched against folded text (`fold`), which is
 // where the look-alikes of each character are covered and control characters
-// are dropped.
-const DELIMITER = /<(?=[\s/\\]*untrusted-c[o0]ntent)/giu;
+// are dropped. Between any two characters at most one token may be skipped,
+// and a token stands for the `o` or the hyphen when it can be read as one.
+const DELIMITER = new RegExp(
+  `<(?=[\\s/\\\\\uE000-\uE002]*${Array.from(UNTRUSTED_TAG, (char) =>
+    char === 'o' ? '[o0\uE000\uE002]' : char === '-' ? '[-\uE001\uE002]' : char,
+  ).join('[\uE000-\uE002]?')})`,
+  'giu',
+);
 // Anything but printable ASCII: text holding none of it is its own fold.
 const NEEDS_FOLD = /[^\u0020-\u007E]/u;
 // Combining marks: accents and overlays, spacing or not.
@@ -91,18 +117,26 @@ export const visibleEscape = (char: string): string => {
   return `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`;
 };
 
-/** What one code point of a decomposed character counts as: its plain look-alike, nothing for a combining mark. */
+/**
+ * What one code point that does not decompose further counts as: its plain
+ * look-alike when listed; a token when it is a listed look-alike AND a
+ * combining mark (both readings, see `markToken`); nothing for any other
+ * combining mark. A private-use character of the text itself is never one of
+ * the fold's tokens: it becomes U+FFFD, which is read as nothing in particular.
+ */
 const plain = (char: string): string => {
-  return DELIMITER_CONFUSABLES.get(char) ?? (MARK.test(char) ? '' : char);
+  if (TOKENS.test(char)) return '\uFFFD';
+  const listed = DELIMITER_CONFUSABLES.get(char);
+  if (MARK.test(char)) return listed === undefined ? '' : markToken(char, listed);
+  return listed ?? char;
 };
 
 /** The folded image of one code point that is not printable ASCII (see `fold`). */
 const foldCodePoint = (char: string): string => {
   if (CONTROL.test(char)) return '';
-  const listed = DELIMITER_CONFUSABLES.get(char);
-  if (listed !== undefined) return listed;
+  if (DELIMITER_CONFUSABLES.has(char)) return plain(char);
   const decomposed = char.normalize('NFKD');
-  if (decomposed === char) return MARK.test(char) ? '' : char;
+  if (decomposed === char) return plain(char);
   let image = '';
   for (const part of decomposed) image += plain(part);
   return image;
@@ -120,13 +154,27 @@ const foldCache = new Map<string, string>();
  * point it comes from. Per code point: a control character is dropped; a
  * listed confusable (untrusted-confusables.ts) becomes its plain character;
  * anything else is decomposed (NFKD), and each part is then a listed
- * confusable, a combining mark (dropped) or kept. Folding one code point at a
+ * confusable, a combining mark (dropped) or kept. A combining mark that is
+ * also a listed confusable keeps both readings, as a token (`markToken`), and
+ * a run of those is a single token. Folding one code point at a
  * time keeps the mapping exact; it differs from decomposing the whole string
  * only in the order of combining marks, which are dropped.
  */
 const fold = (text: string): { folded: string; origin: number[] } => {
   let folded = '';
   const origin: number[] = [];
+  // A run of two-reading marks not written yet (one token, see `markToken`), and where it began.
+  let pending = '';
+  let pendingAt = 0;
+  const write = (image: string, at: number): void => {
+    if (pending !== '') {
+      folded += pending;
+      origin.push(pendingAt);
+      pending = '';
+    }
+    folded += image;
+    while (origin.length < folded.length) origin.push(at);
+  };
   let index = 0;
   for (const char of text) {
     let image: string;
@@ -142,10 +190,24 @@ const fold = (text: string): { folded: string; origin: number[] } => {
         image = cached;
       }
     }
-    folded += image;
-    while (origin.length < folded.length) origin.push(index);
+    if (!TOKENS.test(image)) {
+      // Nothing written (a control, a plain combining mark) leaves a pending run open.
+      if (image !== '') write(image, index);
+    } else {
+      for (const part of image) {
+        if (!TOKENS.test(part)) {
+          write(part, index);
+        } else if (pending === '') {
+          pending = part;
+          pendingAt = index;
+        } else {
+          pending = mergeTokens(pending, part);
+        }
+      }
+    }
     index += char.length;
   }
+  if (pending !== '') write('', index);
   return { folded, origin };
 };
 
