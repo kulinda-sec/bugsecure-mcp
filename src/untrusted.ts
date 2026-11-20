@@ -18,8 +18,28 @@
  *    existed cannot know it, so it cannot produce a matching closing tag.
  * 2. Anything in the text that looks like the delimiter anyway —
  *    `<untrusted-content…` / `</untrusted-content…` in any case, with any
- *    whitespace or slashes an HTML-ish parser might accept, including the
- *    fullwidth and small `<` look-alikes — has its `<` replaced by `&lt;`.
+ *    whitespace, slashes or backslashes an HTML-ish parser might accept before
+ *    the name — has its `<` replaced by `&lt;`. So does a spelling that comes
+ *    down to that once each character is reduced to the plain one it stands
+ *    for, in any mix of:
+ *    - compatibility forms, which Unicode normalisation (NFKC/NFKD) resolves:
+ *      the fullwidth and small forms of `<`, `/`, `\` and `-`, fullwidth or
+ *      mathematical letters;
+ *    - combining marks (accents, overlays), composed with the character or
+ *      following it, which are ignored;
+ *    - control characters (C0, DEL, C1), dropped wherever they sit, between
+ *      `<` and the name or inside it;
+ *    - a listed set of confusables for the delimiter's own characters (`<`,
+ *      `/`, `\`, `-` and the letters u n t r s e d c o): the look-alikes the
+ *      Unicode confusables data (UTS #39) records for them — other angle
+ *      brackets, slashes and dashes, letters of other scripts (Cyrillic,
+ *      Greek, Armenian, Cherokee, …), small capitals and IPA letters — and a
+ *      digit zero for the `o`. The list is untrusted-confusables.ts.
+ *    A reader that normalises the text, discards controls or goes by the shape
+ *    of those characters sees no delimiter either. This is that list, not
+ *    every look-alike: a character that resembles one of the delimiter's
+ *    without being listed (or a respelling such as `untrusted_content`) is
+ *    not recognised, and the nonce is what stops it.
  * 3. Invisible characters (Unicode `Default_Ignorable_Code_Point`: zero-width
  *    space/joiners, word joiner, soft hyphen, variation selectors, the "tag"
  *    block used for ASCII smuggling, …) are removed, so they can neither hide
@@ -37,6 +57,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 
+import { DELIMITER_CONFUSABLES } from './untrusted-confusables.js';
+
 export const UNTRUSTED_TAG = 'untrusted-content';
 
 /** 64-bit nonce, lowercase hex. */
@@ -45,8 +67,45 @@ const NONCE_PATTERN = `[0-9a-f]{${String(NONCE_BYTES * 2)}}`;
 const SOURCE_PATTERN = '[A-Za-z0-9:._/#@-]';
 const MAX_SOURCE_LENGTH = 120;
 
-// `<` (or a look-alike: U+FE64 small, U+FF1C fullwidth) + optional whitespace/slashes + tag name, any case.
-const DELIMITER = /[<\uFE64\uFF1C](?=[\s/]*untrusted-content)/giu;
+// A few listed look-alikes are themselves combining marks (anusvara signs drawn
+// as a ring, tone marks drawn as a dash). Such a mark can be read two ways: as
+// the `o` or hyphen it resembles, or, like any combining mark, as nothing. The
+// fold keeps both readings open by writing a run of them as ONE of these
+// private-use tokens, which the delimiter pattern accepts as that character or
+// skips. One token per run, never two in a row, so the pattern has no
+// repetition over them and matching stays linear whatever the text holds.
+const RING_OR_NOTHING = '\uE000';
+const DASH_OR_NOTHING = '\uE001';
+const EITHER_OR_NOTHING = '\uE002';
+const TOKENS = /[\uE000-\uE002]/u;
+/** The token for a mark the table lists; a mark listed as anything else needs a reading of its own here. */
+const markToken = (mark: string, listed: string): string => {
+  if (listed === 'o') return RING_OR_NOTHING;
+  if (listed === '-') return DASH_OR_NOTHING;
+  throw new Error(`untrusted-confusables: combining mark ${visibleEscape(mark)} is listed as "${listed}"`);
+};
+/** The token for a run made of both: `a` joined by `b`. */
+const mergeTokens = (a: string, b: string): string => (a === b ? a : EITHER_OR_NOTHING);
+
+// `<` + optional whitespace, slashes or backslashes + tag name, any case, its
+// `o` possibly a digit zero. Matched against folded text (`fold`), which is
+// where the look-alikes of each character are covered and control characters
+// are dropped. Between any two characters at most one token may be skipped,
+// and a token stands for the `o` or the hyphen when it can be read as one.
+const DELIMITER = new RegExp(
+  `<(?=[\\s/\\\\\uE000-\uE002]*${Array.from(UNTRUSTED_TAG, (char) =>
+    char === 'o' ? '[o0\uE000\uE002]' : char === '-' ? '[-\uE001\uE002]' : char,
+  ).join('[\uE000-\uE002]?')})`,
+  'giu',
+);
+// Anything but printable ASCII: text holding none of it is its own fold.
+const NEEDS_FOLD = /[^\u0020-\u007E]/u;
+// Combining marks: accents and overlays, spacing or not.
+const MARK = /\p{M}/u;
+// C0 controls, DEL and the C1 block. Some readers discard them (tokenizer
+// normalisers do), and NEL and the like are not in `\s`.
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001F\u007F-\u009F]/u;
 // Bidirectional controls: ALM, LRM, RLM, LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI.
 const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
 // Every other invisible code point (includes the U+E0000 tag block and variation selectors).
@@ -58,10 +117,121 @@ export const visibleEscape = (char: string): string => {
   return `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`;
 };
 
+/**
+ * What one code point that does not decompose further counts as: its plain
+ * look-alike when listed; a token when it is a listed look-alike AND a
+ * combining mark (both readings, see `markToken`); nothing for any other
+ * combining mark. A private-use character of the text itself is never one of
+ * the fold's tokens: it becomes U+FFFD, which is read as nothing in particular.
+ */
+const plain = (char: string): string => {
+  if (TOKENS.test(char)) return '\uFFFD';
+  const listed = DELIMITER_CONFUSABLES.get(char);
+  if (MARK.test(char)) return listed === undefined ? '' : markToken(char, listed);
+  return listed ?? char;
+};
+
+/** The folded image of one code point that is not printable ASCII (see `fold`). */
+const foldCodePoint = (char: string): string => {
+  if (CONTROL.test(char)) return '';
+  if (DELIMITER_CONFUSABLES.has(char)) return plain(char);
+  const decomposed = char.normalize('NFKD');
+  if (decomposed === char) return plain(char);
+  let image = '';
+  for (const part of decomposed) image += plain(part);
+  return image;
+};
+
+// Folded images of the non-ASCII code points met so far: a text repeats the
+// same few, and normalising each occurrence is what costs. Emptied when full,
+// so that it stays small whatever is thrown at it.
+const FOLD_CACHE_SIZE = 4096;
+const foldCache = new Map<string, string>();
+
+/**
+ * `text` with every code point replaced by the plain character(s) it stands
+ * for, and for each UTF-16 unit of the result the index in `text` of the code
+ * point it comes from. Per code point: a control character is dropped; a
+ * listed confusable (untrusted-confusables.ts) becomes its plain character;
+ * anything else is decomposed (NFKD), and each part is then a listed
+ * confusable, a combining mark (dropped) or kept. A combining mark that is
+ * also a listed confusable keeps both readings, as a token (`markToken`), and
+ * a run of those is a single token. Folding one code point at a
+ * time keeps the mapping exact; it differs from decomposing the whole string
+ * only in the order of combining marks, which are dropped.
+ */
+const fold = (text: string): { folded: string; origin: number[] } => {
+  let folded = '';
+  const origin: number[] = [];
+  // A run of two-reading marks not written yet (one token, see `markToken`), and where it began.
+  let pending = '';
+  let pendingAt = 0;
+  const write = (image: string, at: number): void => {
+    if (pending !== '') {
+      folded += pending;
+      origin.push(pendingAt);
+      pending = '';
+    }
+    folded += image;
+    while (origin.length < folded.length) origin.push(at);
+  };
+  let index = 0;
+  for (const char of text) {
+    let image: string;
+    if (!NEEDS_FOLD.test(char)) {
+      image = char;
+    } else {
+      const cached = foldCache.get(char);
+      if (cached === undefined) {
+        image = foldCodePoint(char);
+        if (foldCache.size >= FOLD_CACHE_SIZE) foldCache.clear();
+        foldCache.set(char, image);
+      } else {
+        image = cached;
+      }
+    }
+    if (!TOKENS.test(image)) {
+      // Nothing written (a control, a plain combining mark) leaves a pending run open.
+      if (image !== '') write(image, index);
+    } else {
+      for (const part of image) {
+        if (!TOKENS.test(part)) {
+          write(part, index);
+        } else if (pending === '') {
+          pending = part;
+          pendingAt = index;
+        } else {
+          pending = mergeTokens(pending, part);
+        }
+      }
+    }
+    index += char.length;
+  }
+  if (pending !== '') write('', index);
+  return { folded, origin };
+};
+
+/** Replace the `<` of every delimiter, in any spelling `fold` reduces to it, by `&lt;`. */
+const neutraliseDelimiters = (text: string): string => {
+  if (!NEEDS_FOLD.test(text)) return text.replace(DELIMITER, '&lt;');
+  const { folded, origin } = fold(text);
+  let out = '';
+  let copied = 0;
+  for (const match of folded.matchAll(DELIMITER)) {
+    // The code point of `text` that folds to this `<`: itself or one of its
+    // look-alikes, which `&lt;` replaces whole.
+    const at = origin[match.index];
+    if (at === undefined || at < copied) continue;
+    out += `${text.slice(copied, at)}&lt;`;
+    copied = at + ((text.codePointAt(at) ?? 0) > 0xffff ? 2 : 1);
+  }
+  return out + text.slice(copied);
+};
+
 /** Neutralise text so it can sit safely inside an untrusted-content block. */
 export const escapeUntrusted = (text: string): string => {
   // Order matters: invisible characters go first, so they cannot split a delimiter.
-  return text.replace(BIDI_CONTROLS, visibleEscape).replace(INVISIBLE, '').replace(DELIMITER, '&lt;');
+  return neutraliseDelimiters(text.replace(BIDI_CONTROLS, visibleEscape).replace(INVISIBLE, ''));
 };
 
 /** Sanitise a `source` label (e.g. `report:abc123:body`). */
@@ -115,12 +285,13 @@ const BLOCK = new RegExp(
   `^<${UNTRUSTED_TAG}-(${NONCE_PATTERN}) source="${SOURCE_PATTERN}{1,${String(MAX_SOURCE_LENGTH)}}">\\n[\\s\\S]*\\n</${UNTRUSTED_TAG}-\\1>$`,
   'u',
 );
-const ANY_DELIMITER = new RegExp(`</?${UNTRUSTED_TAG}`, 'giu');
 
 /** `true` when `value` is exactly one block produced by `untrusted()`. */
 export const isUntrustedBlock = (value: string): boolean => {
   // Exactly one opening and one closing delimiter: the ones `untrusted()` wrote.
-  return BLOCK.test(value) && (value.match(ANY_DELIMITER) ?? []).length === 2;
+  // Counted the way `escapeUntrusted` looks for them, so a look-alike that
+  // slipped into the text fails the check.
+  return BLOCK.test(value) && (fold(value).folded.match(DELIMITER) ?? []).length === 2;
 };
 
 // C0 controls except tab and line feed (so CR, backspace, ESC…), DEL, the C1
@@ -139,4 +310,111 @@ const REVIEW_CONTROLS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u2028\u2029]/g
 export const hasControlCharacters = (text: string): boolean => {
   REVIEW_CONTROLS.lastIndex = 0;
   return REVIEW_CONTROLS.test(text);
+};
+
+// Everything `escapeUntrusted` removes or escapes on the way out: the
+// bidirectional controls and every `Default_Ignorable_Code_Point`. Built from
+// the same two expressions, so the two directions cannot drift apart.
+const CONCEALED = new RegExp(`${BIDI_CONTROLS.source}|${INVISIBLE.source}`, 'u');
+const BIDI_CONTROL = new RegExp(BIDI_CONTROLS.source, 'u');
+const ZERO_WIDTH_NON_JOINER = '\u200C';
+const ZERO_WIDTH_JOINER = '\u200D';
+const TEXT_PRESENTATION = '\uFE0E';
+const EMOJI_PRESENTATION = '\uFE0F';
+const KEYCAP = '\u20E3';
+const KEYCAP_BASE = /^[0-9#*]$/;
+const PICTOGRAPH = /\p{Extended_Pictographic}/u;
+const EMOJI_MODIFIER = /\p{Emoji_Modifier}/u;
+const LETTER_OR_MARK = /[\p{L}\p{M}]/u;
+// Scripts whose orthography uses the zero-width joiner or non-joiner, where
+// the character changes how its neighbours are drawn (so it is not hidden):
+// the Arabic family (Persian, Urdu, Kurdish…), the joining scripts of West
+// Africa, and the Indic and South-East Asian scripts that use it in clusters.
+const JOINER_SCRIPTS = [
+  'Arabic',
+  'Syriac',
+  'Mandaic',
+  'Nko',
+  'Adlam',
+  'Hanifi_Rohingya',
+  'Devanagari',
+  'Bengali',
+  'Gurmukhi',
+  'Gujarati',
+  'Oriya',
+  'Tamil',
+  'Telugu',
+  'Kannada',
+  'Malayalam',
+  'Sinhala',
+  'Khmer',
+  'Myanmar',
+];
+const JOINER_SCRIPT = new RegExp(`[${JOINER_SCRIPTS.map((script) => `\\p{scx=${script}}`).join('')}]`, 'u');
+
+/** A character `hiddenCharacter` refuses, and which of the two kinds it is. */
+export interface HiddenCharacter {
+  kind: 'direction-changing' | 'invisible';
+  /** Printable escape of the code point, e.g. `\u{202E}`. */
+  escape: string;
+}
+
+/**
+ * The first character of `text` that hides or reorders content, or `null`.
+ * Used to refuse input a person approves before it is sent: what they read
+ * must be what is written. (Control characters are `hasControlCharacters`.)
+ *
+ * Refused, wherever they sit:
+ * - every bidirectional control (U+061C, U+200E, U+200F, U+202A–U+202E,
+ *   U+2066–U+2069): they change the order text is displayed in (Trojan
+ *   Source). Right-to-left text needs none of them: the bidirectional
+ *   algorithm orders Arabic or N'Ko letters by itself;
+ * - every other `Default_Ignorable_Code_Point`, which renders as nothing: the
+ *   zero-width space, word joiner, BOM, soft hyphen, combining grapheme
+ *   joiner, Hangul and Khmer fillers, Mongolian vowel separator and free
+ *   variation selectors, invisible operators, deprecated format characters,
+ *   variation selectors 1–14 and 17–256, and the whole tag block
+ *   (U+E0000–U+E007F), which spells invisible ASCII. Tags are refused even in
+ *   a well-formed emoji tag sequence, so the subdivision flags (England,
+ *   Scotland, Wales) are refused: an exception would keep open a channel that
+ *   carries letters and digits, for three flags.
+ *
+ * Accepted, only where legitimate text needs them and never in a run (each
+ * must directly follow a visible character, so a sequence of them cannot
+ * encode hidden data, as zero-width or variation-selector steganography does):
+ * - the zero-width joiner and non-joiner (U+200D, U+200C) directly after a
+ *   letter or mark of a script that uses them (`JOINER_SCRIPTS`), where they
+ *   visibly change the shaping (Persian compounds, Indic conjuncts);
+ * - the zero-width joiner inside an emoji sequence: after a pictograph, a skin
+ *   tone modifier or the emoji presentation selector, and before a pictograph
+ *   (family, profession and flag sequences);
+ * - the presentation selectors (U+FE0E, U+FE0F) directly after a pictograph,
+ *   and U+FE0F between a keycap base (`0`–`9`, `#`, `*`) and U+20E3.
+ * Anywhere else (a joiner between Latin letters, a selector after a letter)
+ * they are invisible and refused.
+ */
+export const hiddenCharacter = (text: string): HiddenCharacter | null => {
+  if (!CONCEALED.test(text)) return null;
+  const chars = Array.from(text);
+  for (const [index, char] of chars.entries()) {
+    if (!CONCEALED.test(char)) continue;
+    if (BIDI_CONTROL.test(char)) return { kind: 'direction-changing', escape: visibleEscape(char) };
+    const previous = chars[index - 1] ?? '';
+    const next = chars[index + 1] ?? '';
+    const joiner = char === ZERO_WIDTH_JOINER || char === ZERO_WIDTH_NON_JOINER;
+    if (joiner && LETTER_OR_MARK.test(previous) && JOINER_SCRIPT.test(previous)) continue;
+    if (
+      char === ZERO_WIDTH_JOINER &&
+      // A selector reached here was accepted: it follows a pictograph.
+      (PICTOGRAPH.test(previous) || EMOJI_MODIFIER.test(previous) || previous === EMOJI_PRESENTATION) &&
+      PICTOGRAPH.test(next)
+    ) {
+      continue;
+    }
+    const selector = char === EMOJI_PRESENTATION || char === TEXT_PRESENTATION;
+    if (selector && PICTOGRAPH.test(previous)) continue;
+    if (char === EMOJI_PRESENTATION && KEYCAP_BASE.test(previous) && next === KEYCAP) continue;
+    return { kind: 'invisible', escape: visibleEscape(char) };
+  }
+  return null;
 };

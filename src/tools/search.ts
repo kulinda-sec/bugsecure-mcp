@@ -4,12 +4,12 @@ import { SearchDocument } from '../graphql/generated.js';
 import { untrusted } from '../untrusted.js';
 import {
   code,
+  fencedSlug,
   id,
   paginationInput,
   paginationOutput,
   page,
-  safeSlug,
-  slug,
+  userText,
   wrapped,
 } from './shared/common.js';
 import { defineTool } from './define-tool.js';
@@ -33,7 +33,7 @@ export const search = defineTool({
   requiredScopes: ['programs:read'],
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    query: z.string().trim().min(2).max(200).describe('Search terms (at least 2 characters).'),
+    query: userText(2, 200, 'Search terms (at least 2 characters).'),
     types: z
       .array(z.enum(TYPES))
       .min(1)
@@ -47,7 +47,7 @@ export const search = defineTool({
       z.object({
         type: z.enum(TYPES),
         id: id(),
-        slug: slug('Programme slug (programmes only).'),
+        slug: wrapped('Programme slug (programmes only).').nullable(),
         title: wrapped('For researchers: the username.'),
         status: code('machine-code').nullable(),
         highlight: wrapped('Excerpt; matches marked with <mark>.').nullable(),
@@ -75,7 +75,7 @@ export const search = defineTool({
         {
           type,
           id: r.id,
-          slug: safeSlug(r.slug),
+          slug: fencedSlug(`${src}:slug`, r.slug),
           title: untrusted(`${src}:title`, r.title),
           status: r.status,
           highlight: untrusted(`${src}:excerpt`, r.highlight),

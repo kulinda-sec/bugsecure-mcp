@@ -9,7 +9,15 @@ import {
 import { BugSecureError } from '../errors.js';
 import { untrusted } from '../untrusted.js';
 import { defineTool, type ToolContext } from './define-tool.js';
-import { code, id, idInput, ifShaped, SLUG_PATTERN, timestamp, wrapped } from './shared/common.js';
+import {
+  code,
+  id,
+  idInput,
+  ifShaped,
+  THIRD_PARTY_SLUG_PATTERN,
+  timestamp,
+  wrapped,
+} from './shared/common.js';
 import { ProgramDetailSchema, toProgramDetail } from './shared/program.js';
 
 const ActivitySchema = z
@@ -69,12 +77,14 @@ const toActivity = (a: GetProgramActivityQuery['publicProgramActivity']): z.inpu
   moreDisclosures: a.nextCursor !== null,
 });
 
-/** Public activity; null when there is none to show (the API answers NOT_FOUND unless public and active). */
+/**
+ * Public activity; null when there is none to show (the API answers NOT_FOUND unless public and active).
+ * `slug` is the API's own value for the programme, never the fenced one the tool returns.
+ */
 const readActivity = async (
-  slug: string | null,
+  slug: string,
   { graphql, signal }: ToolContext,
 ): Promise<z.input<typeof ActivitySchema>> => {
-  if (slug === null) return null;
   try {
     const { publicProgramActivity } = await graphql.request(GetProgramActivityDocument, { slug }, { signal });
     return toActivity(publicProgramActivity);
@@ -99,9 +109,9 @@ export const getProgram = defineTool({
       id: idInput('Programme id (from search_programs).').optional(),
       slug: z
         .string()
-        .regex(SLUG_PATTERN, 'not a programme slug')
+        .regex(THIRD_PARTY_SLUG_PATTERN, 'not a programme slug')
         .optional()
-        .describe('Programme slug, as in its URL.'),
+        .describe('Programme slug, as in its URL (the text inside a returned `slug`, without its fence).'),
       activity: z
         .boolean()
         .default(false)
@@ -126,11 +136,10 @@ export const getProgram = defineTool({
     if (!program) {
       throw new BugSecureError('NOT_FOUND', 'No programme with that id or slug is visible to this account.');
     }
-    const detail = toProgramDetail(program);
     return {
       data: {
-        program: detail,
-        activity: input.activity ? await readActivity(detail.slug ?? null, context) : null,
+        program: toProgramDetail(program),
+        activity: input.activity ? await readActivity(program.slug, context) : null,
       },
     };
   },

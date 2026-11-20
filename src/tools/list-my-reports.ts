@@ -1,7 +1,7 @@
 import * as z from 'zod';
 
 import { ListMyReportsDocument } from '../graphql/generated.js';
-import { idInput, paginationInput, paginationOutput, page } from './shared/common.js';
+import { idInput, paginationInput, paginationOutput, page, userText } from './shared/common.js';
 import {
   ReportStatusSchema,
   ReportSummarySchema,
@@ -26,13 +26,7 @@ export const listMyReports = defineTool({
     programId: idInput('Only reports on this programme.').optional(),
     status: ReportStatusSchema.optional().describe('Only reports in this status.'),
     severity: SeveritySchema.optional().describe('Only reports with this claimed severity.'),
-    query: z
-      .string()
-      .trim()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('Text to look for in titles and descriptions.'),
+    query: userText(1, 200, 'Text to look for in titles and descriptions.').optional(),
     ...paginationInput(MAX_LIMIT),
   }),
   output: z.object({ reports: z.array(ReportSummarySchema), ...paginationOutput }),

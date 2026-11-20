@@ -15,7 +15,7 @@ import type {
   ProgramVisibility,
 } from '../../graphql/generated.js';
 import { untrusted, untrustedJson } from '../../untrusted.js';
-import { code, id, safeSlug, slug, timestamp, wrapped } from './common.js';
+import { code, fencedSlug, id, timestamp, wrapped } from './common.js';
 
 const PROGRAM_STATUSES = [
   'ACTIVE',
@@ -29,12 +29,12 @@ const PROGRAM_VISIBILITIES = ['PRIVATE', 'PUBLIC'] as const satisfies readonly P
 export const OrganizationRefSchema = z.object({
   id: id(),
   name: wrapped(),
-  slug: slug(),
+  slug: wrapped().nullable(),
 });
 
 export const ProgramSummarySchema = z.object({
   id: id(),
-  slug: slug(),
+  slug: wrapped().nullable(),
   title: wrapped(),
   status: z.enum(PROGRAM_STATUSES),
   visibility: z.enum(PROGRAM_VISIBILITIES),
@@ -61,7 +61,7 @@ export const toProgramSummary = (p: ProgramSummaryFragment): ProgramSummary => {
   const src = `program:${p.id}`;
   return {
     id: p.id,
-    slug: safeSlug(p.slug),
+    slug: fencedSlug(`${src}:slug`, p.slug),
     title: untrusted(`${src}:title`, p.title),
     status: p.status,
     visibility: p.visibility,
@@ -71,7 +71,7 @@ export const toProgramSummary = (p: ProgramSummaryFragment): ProgramSummary => {
     organization: p.organization && {
       id: p.organization.id,
       name: untrusted(`organization:${p.organization.id}:name`, p.organization.name),
-      slug: safeSlug(p.organization.slug),
+      slug: fencedSlug(`organization:${p.organization.id}:slug`, p.organization.slug),
     },
   };
 };
